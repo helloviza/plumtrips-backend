@@ -12,8 +12,7 @@
     "dev": "tsx --env-file=./.env --watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node --enable-source-maps dist/server.js",
-    "clean": "rimraf dist || rm -rf dist",
-    "postinstall": "npm run build"
+    "clean": "rimraf dist || rm -rf dist"
   },
   "dependencies": {
     "axios": "^1.11.0",
