@@ -17,8 +17,11 @@ const SSO_PRIVATE_KEY = (process.env.SSO_PRIVATE_KEY || "").replace(/\\n/g, "\n"
 const SSO_PUBLIC_KEY = (process.env.SSO_PUBLIC_KEY || "").replace(/\\n/g, "\n");
 const SSO_REDEEM_API_KEY = process.env.SSO_REDEEM_API_KEY || "";
 
-// ✅ IMPORTANT: update this to prod HelloViza backend
+// ✅ Always point to HelloViza backend (prod)
 const HZ_BASE = process.env.SSO_HELLOVIZA_BASE_URL || "https://www.helloviza.com";
+
+// ✅ Always force HelloViza frontend landing page
+const HV_FINAL_PAGE = "https://helloviza.com/go-for-visa";
 
 const SSO_AUDIENCE = "helloviza";
 const TICKET_TTL_SEC = Number(process.env.SSO_TICKET_TTL || 120); // 2 minutes
@@ -52,7 +55,6 @@ r.post("/ticket", requireUser, async (req: AuthedRequest, res) => {
       return res.status(400).json({ ok: false, message: "Invalid audience" });
     }
 
-    const ret = typeof req.body?.return === "string" ? req.body.return : "/";
     const jti = crypto.randomUUID();
 
     // Sign RS256 JWT ticket
@@ -77,9 +79,9 @@ r.post("/ticket", requireUser, async (req: AuthedRequest, res) => {
       expAt: new Date(Date.now() + TICKET_TTL_SEC * 1000),
     });
 
-    // ✅ Force redirect to HV backend (never localhost)
+    // ✅ Always redirect via HV backend consume → then land on HV frontend Visa page
     const redirectUrl =
-      `${HZ_BASE}/sso/consume?ticket=${encodeURIComponent(ticket)}&ret=${encodeURIComponent(ret)}`;
+      `${HZ_BASE}/sso/consume?ticket=${encodeURIComponent(ticket)}&ret=${encodeURIComponent(HV_FINAL_PAGE)}`;
 
     res.json({ ok: true, redirectUrl });
   } catch (e: any) {
@@ -89,7 +91,7 @@ r.post("/ticket", requireUser, async (req: AuthedRequest, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  REDEEM TICKET                                                      */
+/*  REDEEM TICKET                                                     */
 /* ------------------------------------------------------------------ */
 r.post("/redeem", async (req, res) => {
   try {
