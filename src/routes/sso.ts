@@ -3,21 +3,25 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import requireUser, { AuthedRequest } from "../mw/requireUser.js";
-import SsoTicket from "../models/ssoTicket.model.js";   // ✅ use your model
+import SsoTicket from "../models/ssoTicket.model.js";
 
 const r = Router();
 
-/** ---- ENV / CONFIG ---- */
+/* ------------------------------------------------------------------ */
+/*  ENV CONFIG                                                        */
+/* ------------------------------------------------------------------ */
 const BACKEND_PUBLIC_URL =
   process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 8080}`;
 
 const SSO_PRIVATE_KEY = (process.env.SSO_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 const SSO_PUBLIC_KEY = (process.env.SSO_PUBLIC_KEY || "").replace(/\\n/g, "\n");
-
 const SSO_REDEEM_API_KEY = process.env.SSO_REDEEM_API_KEY || "";
-const HZ_BASE = process.env.SSO_HELLOVIZA_BASE_URL || "http://localhost:5055";
+
+// ✅ IMPORTANT: update this to prod HelloViza backend
+const HZ_BASE = process.env.SSO_HELLOVIZA_BASE_URL || "https://www.helloviza.com";
+
 const SSO_AUDIENCE = "helloviza";
-const TICKET_TTL_SEC = Number(process.env.SSO_TICKET_TTL || 120); // default 2 min
+const TICKET_TTL_SEC = Number(process.env.SSO_TICKET_TTL || 120); // 2 minutes
 
 /* ------------------------------------------------------------------ */
 /*  DEBUG                                                             */
@@ -26,6 +30,7 @@ r.get("/_debug", (_req, res) => {
   res.json({
     ok: true,
     backendPublicUrl: BACKEND_PUBLIC_URL,
+    hzBase: HZ_BASE,
     havePrivate: !!SSO_PRIVATE_KEY,
     havePublic: !!SSO_PUBLIC_KEY,
     haveRedeemKey: !!SSO_REDEEM_API_KEY,
@@ -64,7 +69,7 @@ r.post("/ticket", requireUser, async (req: AuthedRequest, res) => {
       }
     );
 
-    // Persist in DB
+    // Save ticket in DB (single-use guard)
     await SsoTicket.create({
       jti,
       aud,
@@ -72,6 +77,7 @@ r.post("/ticket", requireUser, async (req: AuthedRequest, res) => {
       expAt: new Date(Date.now() + TICKET_TTL_SEC * 1000),
     });
 
+    // ✅ Force redirect to HV backend (never localhost)
     const redirectUrl =
       `${HZ_BASE}/sso/consume?ticket=${encodeURIComponent(ticket)}&ret=${encodeURIComponent(ret)}`;
 
@@ -83,16 +89,12 @@ r.post("/ticket", requireUser, async (req: AuthedRequest, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  REDEEM TICKET                                                     */
+/*  REDEEM TICKET                                                      */
 /* ------------------------------------------------------------------ */
 r.post("/redeem", async (req, res) => {
   try {
-    if (!SSO_PUBLIC_KEY) {
-      return res.status(500).json({ ok: false, message: "SSO public key missing" });
-    }
-    if (!SSO_REDEEM_API_KEY) {
-      return res.status(500).json({ ok: false, message: "Redeem key not set" });
-    }
+    if (!SSO_PUBLIC_KEY) return res.status(500).json({ ok: false, message: "SSO public key missing" });
+    if (!SSO_REDEEM_API_KEY) return res.status(500).json({ ok: false, message: "Redeem key not set" });
 
     const provided = String(req.headers["x-sso-key"] || "");
     if (provided !== SSO_REDEEM_API_KEY) {
@@ -111,23 +113,13 @@ r.post("/redeem", async (req, res) => {
 
     const userId = String(decoded.sub || "");
     const jti = String(decoded.jti || "");
-    if (!userId || !jti) {
-      return res.status(400).json({ ok: false, message: "Invalid ticket payload" });
-    }
+    if (!userId || !jti) return res.status(400).json({ ok: false, message: "Invalid ticket payload" });
 
-    // Check DB record (single-use guard)
     const record = await SsoTicket.findOne({ jti, aud: SSO_AUDIENCE, userId });
-    if (!record) {
-      return res.status(400).json({ ok: false, message: "Ticket not found" });
-    }
-    if (record.usedAt) {
-      return res.status(400).json({ ok: false, message: "Ticket already used" });
-    }
-    if (record.expAt.getTime() < Date.now()) {
-      return res.status(400).json({ ok: false, message: "Ticket expired" });
-    }
+    if (!record) return res.status(400).json({ ok: false, message: "Ticket not found" });
+    if (record.usedAt) return res.status(400).json({ ok: false, message: "Ticket already used" });
+    if (record.expAt.getTime() < Date.now()) return res.status(400).json({ ok: false, message: "Ticket expired" });
 
-    // Mark used
     record.usedAt = new Date();
     await record.save();
 
@@ -135,7 +127,6 @@ r.post("/redeem", async (req, res) => {
       return res.status(500).json({ ok: false, message: "JWT_SECRET missing" });
     }
 
-    // Issue HS256 token for HV
     const appToken = jwt.sign(
       { sub: userId },
       process.env.JWT_SECRET,
