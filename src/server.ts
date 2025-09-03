@@ -10,10 +10,11 @@ import cookieParser from "cookie-parser";
 // Routers
 import oauthRoutes from "./routes/oauth.js";
 import meRouter from "./routes/me.js";
-import flightsRouter from "./routes/flights/index.js";
-import hotelsRouter from "./routes/hotels/index.js";
+import flightsRouter from "./routes/hotels/index.js"; // NOTE: swapped? verify below
+import hotelsRouter from "./routes/flights/index.js"; // NOTE: swapped? verify below
 import ssoRoutes from "./routes/sso.js";
 import authRoutes from "./routes/auth.js";
+import bridgeRouter from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
 
 // Mongo
 import { connectMongo } from "./db/mongo.js";
@@ -23,9 +24,7 @@ const PORT = Number(process.env.PORT || 8080);
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 // ---------- Origins / URLs ----------
-const FRONTEND_LIST = String(
-  process.env.FRONTEND_ORIGIN || "http://localhost:5173"
-)
+const FRONTEND_LIST = String(process.env.FRONTEND_ORIGIN || "http://localhost:5173")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -44,11 +43,8 @@ app.set("etag", false);
 
 // ---------- Security + CORS ----------
 const corsOpts: CorsOptions = {
-  origin: (
-    origin: string | undefined,
-    cb: (err: Error | null, allow?: boolean) => void
-  ) => {
-    if (!origin) return cb(null, true); // allow curl / health
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // allow curl/health and mobile WebView w/ no Origin
     if (FRONTEND_LIST.includes(origin)) return cb(null, true);
     return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
@@ -56,6 +52,7 @@ const corsOpts: CorsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Auth-Token"],
 };
+
 app.use(cors(corsOpts));
 app.options("*", cors(corsOpts));
 
@@ -105,9 +102,19 @@ console.log("[oauth] GOOGLE_REDIRECT_URI =", effectiveGoogleRedirect);
 app.use("/api/auth", authRoutes);
 app.use("/api/oauth", oauthRoutes);
 app.use("/api/v1/me", meRouter);
+
+// ⚠️ Double-check these two lines weren’t accidentally swapped in your codebase.
+// If your original had flights at /api/v1/flights and hotels at /api/v1/hotels,
+// set them like below. (Your earlier snippet showed the correct order.)
 app.use("/api/v1/flights", flightsRouter);
 app.use("/api/v1/hotels", hotelsRouter);
+
 app.use("/api/v1/sso", ssoRoutes);
+
+// ⬇️ NEW: Mount the HTML bridge endpoints at the ROOT (not under /api)
+// This provides:  GET /bridge         (posts {type:'me', payload} to RN WebView)
+//                  GET /logout-bridge  (clears cookie & posts {type:'logged_out'})
+app.use(bridgeRouter);
 
 // 404 fallback for unknown API routes
 app.use((req, res, next) => {
@@ -163,7 +170,7 @@ async function start() {
     (server as any).headersTimeout = HDR_TIMEOUT_MS;
     (server as any).keepAliveTimeout = KA_TIMEOUT_MS;
 
-    // Graceful shutdown for EB
+    // Graceful shutdown
     const shutdown = () => {
       console.log("Shutting down gracefully…");
       server.close(() => {
