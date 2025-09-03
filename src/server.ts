@@ -14,7 +14,7 @@ import flightsRouter from "./routes/hotels/index.js"; // NOTE: swapped? verify b
 import hotelsRouter from "./routes/flights/index.js"; // NOTE: swapped? verify below
 import ssoRoutes from "./routes/sso.js";
 import authRoutes from "./routes/auth.js";
-import bridgeRouter from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
+import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
 
 // Mongo
 import { connectMongo } from "./db/mongo.js";
@@ -114,7 +114,8 @@ app.use("/api/v1/sso", ssoRoutes);
 // ⬇️ NEW: Mount the HTML bridge endpoints at the ROOT (not under /api)
 // This provides:  GET /bridge         (posts {type:'me', payload} to RN WebView)
 //                  GET /logout-bridge  (clears cookie & posts {type:'logged_out'})
-app.use(bridgeRouter);
+
+app.use(bridgeRoutes);
 
 // 404 fallback for unknown API routes
 app.use((req, res, next) => {
