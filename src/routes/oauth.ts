@@ -28,7 +28,6 @@ const FRONTEND_LIST = (process.env.FRONTEND_ORIGIN || "http://localhost:5173")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-
 const FRONTEND_BASE = FRONTEND_LIST[0];
 
 console.log("[OAuth] REDIRECT_URI        =", REDIRECT_URI);
@@ -56,13 +55,15 @@ const fromB64url = (s: string) => {
   }
 };
 const safePath = (p?: string) => (!p || !p.startsWith("/") ? "/" : p);
+const isDeepLink = (s?: string) =>
+  !!s && /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(s); // e.g. plumtrips://...
 
 /** Mobile sentinel: if `from` equals this, we end at /bridge */
 const MOBILE_SENTINEL = "/__mobile_bridge__";
 
 /* ------------------------------------------------------------------ */
 /*  OPTIONAL: legacy alias                                            */
-/*  Hitting /api/oauth/google will just forward to /start              */
+/*  Hitting /api/oauth/google will just forward to /start             */
 /* ------------------------------------------------------------------ */
 router.get("/google", (req, res) => {
   const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
@@ -72,15 +73,25 @@ router.get("/google", (req, res) => {
 
 /* ------------------------------------------------------------------ */
 /*  STEP 1: SEND USER TO GOOGLE                                       */
-/*      GET /api/oauth/google/start?from=/account                     */
-/*      Mobile app should pass from=/__mobile_bridge__                */
-/*      (or you can set ?mobile=1 to force the sentinel)              */
+/*      GET /api/oauth/google/start
+/*      Query options:
+/*        - from=/any/web/path               (web return)
+/*        - mobile=1                         (return to /bridge for Expo close)
+/*        - deeplink=plumtrips://oauth-done  (return to app deep link)
 /* ------------------------------------------------------------------ */
 router.get("/google/start", (req: Request, res: Response) => {
-  // Prefer explicit ?from=... otherwise "/" (or sentinel if ?mobile=1)
-  let from = safePath(String(req.query.from || "/"));
   const mobile = String(req.query.mobile || "") === "1";
-  if (mobile) from = MOBILE_SENTINEL;
+  const deeplink = String(req.query.deeplink || "").trim();
+
+  // Default: web flow back to "/"
+  let from: string = safePath(String(req.query.from || "/"));
+
+  // If a deep link is provided, prefer that
+  if (deeplink && isDeepLink(deeplink)) {
+    from = deeplink; // store as-is (not path)
+  } else if (mobile) {
+    from = MOBILE_SENTINEL; // signal mobile bridge flow
+  }
 
   const nonce = crypto.randomBytes(16).toString("hex");
   res.cookie("oauth_state", nonce, {
@@ -99,7 +110,7 @@ router.get("/google/start", (req: Request, res: Response) => {
     redirect_uri: REDIRECT_URI, // must match Google Console
   });
 
-  console.log("[OAuth] redirecting user to Google Auth");
+  console.log("[OAuth] → Google Auth");
   res.redirect(url);
 });
 
@@ -120,7 +131,8 @@ router.get("/google/callback", async (req: Request, res: Response) => {
     }
     res.clearCookie("oauth_state", { path: "/" });
 
-    const from = safePath(fromB64url(b64from));
+    const fromRaw = fromB64url(b64from); // may be a path OR deep link OR sentinel
+    const fromPath = safePath(fromRaw);
 
     // 1) Exchange code -> tokens
     const { tokens } = await oauth2.getToken({ code, redirect_uri: REDIRECT_URI });
@@ -172,23 +184,30 @@ router.get("/google/callback", async (req: Request, res: Response) => {
       await user.save();
     }
 
-    // 4) Issue session cookie (HttpOnly, Secure, SameSite=None inside issueSession)
+    // 4) Issue session cookie
     issueSession(res, {
       _id: user._id,
       email: user.email,
       name: user.fullName || undefined,
     });
 
-    // 5) Redirect destination
-    const isMobile = from === MOBILE_SENTINEL || from === "/bridge";
-    if (isMobile) {
-      // ✅ Mobile: land on /bridge so Expo Custom Tab hits returnUrl and closes
+    // 5) Decide where to send the browser
+    //    A) Deep link provided? → go straight back to app
+    if (isDeepLink(fromRaw)) {
+      console.log("[OAuth] callback → deep link:", fromRaw);
+      return res.redirect(302, fromRaw);
+    }
+
+    //    B) Mobile sentinel or explicit /bridge? → go to /bridge
+    if (fromRaw === MOBILE_SENTINEL || fromRaw === "/bridge") {
       const bridgeUrl = `${BACKEND_PUBLIC_URL}/bridge`;
+      console.log("[OAuth] callback → /bridge:", bridgeUrl);
       return res.redirect(302, bridgeUrl);
     }
 
-    // ✅ Web: send users back to your website (respect original "from")
-    const dest = new URL(from || "/account", FRONTEND_BASE).toString();
+    //    C) Normal web: respect original path on your website
+    const dest = new URL(fromPath || "/account", FRONTEND_BASE).toString();
+    console.log("[OAuth] callback → web dest:", dest);
     return res.redirect(302, dest);
   } catch (e: any) {
     const googleErr =
