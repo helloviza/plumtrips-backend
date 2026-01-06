@@ -183,9 +183,9 @@ async function start() {
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
   } catch (e) {
-    console.error("❌ Failed to start server:", e);
-    process.exit(1);
-  }
+  console.error("❌ Failed to start server:", e);
+  console.error("⚠️ Server will stay alive for debugging / retry");
+}
 }
 
 start();
