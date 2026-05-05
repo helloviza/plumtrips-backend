@@ -16,8 +16,13 @@ export function issueSession(res: Response, user: MinimalUser, sid?: string): st
     throw new Error("JWT_SECRET is not set");
   }
 
+  const userId = String(user._id ?? user.id);
+  if (!userId || userId === "undefined") {
+    throw new Error("User ID is required to issue a session");
+  }
+
   const payload: Record<string, any> = {
-    sub: String(user._id ?? user.id),
+    sub: userId,
     email: user.email,
     name: user.name,
   };

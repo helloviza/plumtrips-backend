@@ -15,9 +15,12 @@ import hotelsRouter from "./routes/flights/index.js"; // NOTE: swapped? verify b
 import ssoRoutes from "./routes/sso.js";
 import authRoutes from "./routes/auth.js";
 import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
+import authMarket from "./routes/authMarket.js";
+
 
 // Mongo
 import { connectMongo } from "./db/mongo.js";
+
 
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
@@ -100,8 +103,9 @@ console.log("[oauth] GOOGLE_REDIRECT_URI =", effectiveGoogleRedirect);
 
 // ---------- Routes ----------
 app.use("/api/auth", authRoutes);
+app.use("/api/auth-market", authMarket);
 app.use("/api/oauth", oauthRoutes);
-app.use("/api/v1/me", meRouter);
+app.use("/api/v1/me", meRouter); 
 
 // ⚠️ Double-check these two lines weren’t accidentally swapped in your codebase.
 // If your original had flights at /api/v1/flights and hotels at /api/v1/hotels,

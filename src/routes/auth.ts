@@ -143,7 +143,7 @@ router.get("/me", async (req, res) => {
       (payload as any).uid ??
       ""
   );
-  if (!uid) return res.json({ user: null });
+  if (!uid || uid === "undefined") return res.json({ user: null });
 
   const user = await User.findById(uid)
     .select("email fullName phone")
