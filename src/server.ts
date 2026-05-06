@@ -16,6 +16,7 @@ import ssoRoutes from "./routes/sso.js";
 import authRoutes from "./routes/auth.js";
 import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
 import authMarket from "./routes/authMarket.js";
+import marketPanel from "./routes/market_panel/index.js";
 
 
 // Mongo
@@ -104,6 +105,7 @@ console.log("[oauth] GOOGLE_REDIRECT_URI =", effectiveGoogleRedirect);
 // ---------- Routes ----------
 app.use("/api/auth", authRoutes);
 app.use("/api/auth-market", authMarket);
+app.use("/api/abx", marketPanel);
 app.use("/api/oauth", oauthRoutes);
 app.use("/api/v1/me", meRouter); 
 
