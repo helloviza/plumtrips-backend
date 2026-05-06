@@ -1,6 +1,8 @@
 import { Post, BlogListResponse, BlogCreateRequest, BlogUpdateRequest, BlogFilters, BlogModel } from '../../models/blogs.model.js';
 import { Router, Request, Response } from 'express';
 import requireMarketingAdmin from '../../mw/requireMarketingAdmin.js';
+import { upload } from '../../mw/upload.middleware.js';
+import { uploadImageToS3 } from '../../mw/s3upload.middleware.js';
 
 // API Routes for Blog Management
 export const BLOG_ROUTES = {
@@ -248,6 +250,20 @@ router.patch('/:id/unpublish', async (req: Request, res: Response) => {
     res.json({ success: true, data: updatedBlog.toObject() });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to unpublish blog' });
+  }
+});
+
+// POST /api/blogs/upload-image - Upload blog image to S3
+router.post('/upload-image', upload.single('image'), uploadImageToS3('src'), async (req: Request, res: Response) => {
+  try {
+    if (!req.body.src) {
+      return res.status(400).json({ success: false, error: 'No image uploaded' });
+    }
+    res.json({ success: true, data: { url: req.body.src } });
+  } catch (error) {
+    console.error('[blogs upload-image] error:', error);
+    const errorMsg = error instanceof Error ? error.message : 'Failed to upload image';
+    res.status(500).json({ success: false, error: errorMsg });
   }
 });
 
