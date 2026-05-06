@@ -58,7 +58,7 @@ router.post(
   "/",
   requireMarketingAdmin,
   upload.single("image"),
-  uploadImageToS3,
+  uploadImageToS3(),
   validate(createSchema),
   async (req: MarketingAuthedRequest, res:express.Response) => {
     try {
@@ -86,7 +86,7 @@ router.put(
   "/:id",
   requireMarketingAdmin,
   upload.single("image"),
-  uploadImageToS3,
+  uploadImageToS3(),
   validate(updateSchema),
   async (req: MarketingAuthedRequest, res:express.Response) => {
     try {
