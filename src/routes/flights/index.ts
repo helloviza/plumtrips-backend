@@ -7,6 +7,7 @@ import {
   bookFlight,
   ticketFlight,
   getBookingDetails,
+  getAirports,
 } from "../../services/tbo/flight.service.js";
 
 import {
@@ -142,11 +143,20 @@ r.post("/tbo/_search-raw", async (req, res) => {
 /* ------------------------------------------------------------------ */
 
 r.post("/tbo/search", async (req, res) => {
+  console.log("[tbo/search] incoming body:", JSON.stringify(req.body, null, 2));
   try {
     const data = await searchFlights(req.body);
+    console.log("[tbo/search] ✅ success, TraceId:", data?.Response?.TraceId);
     res.json(ok(data));
   } catch (e: any) {
-    res.status(400).json(fail(axiosMessage(e)));
+    const tboData = e?.response?.data;
+    console.error("[tbo/search] ❌ ERROR:", {
+      message: e.message,
+      status: e?.response?.status,
+      tboResponse: tboData ? JSON.stringify(tboData).slice(0, 500) : "(no response data)",
+    });
+    const status = e?.response?.status || 400;
+    res.status(status).json(fail(axiosMessage(e), { tboError: tboData?.Response?.Error || null }));
   }
 });
 
@@ -193,6 +203,36 @@ r.post("/tbo/booking-details", async (req, res) => {
   } catch (e: any) {
     res.status(400).json(fail(axiosMessage(e)));
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* Health check                                                         */
+/* GET /api/v1/flights/tbo/health                                       */
+/* Returns { ok, tokenOk, flightBase } so the frontend can verify the  */
+/* backend → TBO chain is reachable before making real API calls.      */
+/* ------------------------------------------------------------------ */
+
+r.get("/tbo/health", async (_req, res) => {
+  let tokenOk = false;
+  try {
+    const token = await authenticate();
+    tokenOk = typeof token === "string" && token.length > 0;
+  } catch {
+    tokenOk = false;
+  }
+  res.json(ok({ tokenOk, flightBase: FLIGHT_BASE }));
+});
+
+/* ------------------------------------------------------------------ */
+/* Airport list                                                         */
+/* GET /api/v1/flights/tbo/airports                                     */
+/* Returns the curated static airport list. The frontend fetches this  */
+/* at runtime instead of bundling it, so we can later swap to a real   */
+/* TBO SharedData call without touching frontend code.                 */
+/* ------------------------------------------------------------------ */
+
+r.get("/tbo/airports", (_req, res) => {
+  res.json(ok(getAirports()));
 });
 
 export default r;

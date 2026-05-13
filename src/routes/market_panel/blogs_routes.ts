@@ -9,6 +9,11 @@ export const BLOG_ROUTES = {
   // Get all blogs with optional filters
   GET_BLOGS: '/api/blogs',
 
+  // Get blogs by status
+  GET_BLOGS_BY_STATUS: (status: string) =>
+    `/api/blogs?status=${status}`,
+
+
   // Get a single blog by ID or slug
   GET_BLOG: (idOrSlug: string) => `/api/blogs/${idOrSlug}`,
 

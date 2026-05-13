@@ -10,8 +10,8 @@ import cookieParser from "cookie-parser";
 // Routers
 import oauthRoutes from "./routes/oauth.js";
 import meRouter from "./routes/me.js";
-import flightsRouter from "./routes/hotels/index.js"; // NOTE: swapped? verify below
-import hotelsRouter from "./routes/flights/index.js"; // NOTE: swapped? verify below
+import hotelsRouter from "./routes/hotels/index.js"; // NOTE: swapped? verify below
+import flightsRouter from "./routes/flights/index.js"; // NOTE: swapped? verify below
 import ssoRoutes from "./routes/sso.js";
 import authRoutes from "./routes/auth.js";
 import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
@@ -107,7 +107,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/auth-market", authMarket);
 app.use("/api/abx", marketPanel);
 app.use("/api/oauth", oauthRoutes);
-app.use("/api/v1/me", meRouter); 
+app.use("/api/v1/me", meRouter);
 
 // ⚠️ Double-check these two lines weren’t accidentally swapped in your codebase.
 // If your original had flights at /api/v1/flights and hotels at /api/v1/hotels,
@@ -189,9 +189,9 @@ async function start() {
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
   } catch (e) {
-  console.error("❌ Failed to start server:", e);
-  console.error("⚠️ Server will stay alive for debugging / retry");
-}
+    console.error("❌ Failed to start server:", e);
+    console.error("⚠️ Server will stay alive for debugging / retry");
+  }
 }
 
 start();

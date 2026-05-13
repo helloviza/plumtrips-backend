@@ -21,6 +21,13 @@ let cache: { tokenId: string | null; at: number } = { tokenId: null, at: 0 };
 const fresh = (): boolean =>
   !!cache.tokenId && (Date.now() - cache.at) / 60000 < TTL_MIN;
 
+// FIX #5: In-flight promise mutex to prevent concurrent auth races.
+// Without this, two simultaneous searches both call authenticate() before
+// either resolves, get two separate TBO tokens, and the second overwrites
+// the cache — leaving the first request holding a token TBO may invalidate.
+// Now all concurrent callers share the same in-flight promise.
+let _authInFlight: Promise<string> | null = null;
+
 /** For the /tbo/_auth-debug and /tbo/_auth-raw routes */
 export function _authBodyForDebug(mask = false) {
   return {
@@ -31,7 +38,9 @@ export function _authBodyForDebug(mask = false) {
   };
 }
 
-export async function authenticate(): Promise<string> {
+async function _doAuthenticate(): Promise<string> {
+  // Double-check freshness inside the mutex — another call may have
+  // already fetched and cached a token while this one was waiting.
   if (fresh()) return cache.tokenId!;
 
   try {
@@ -65,7 +74,23 @@ export async function authenticate(): Promise<string> {
       err?.message ||
       "Authenticate request failed";
     throw new Error(status ? `HTTP ${status} ${msg}` : msg);
+  } finally {
+    // Always clear the in-flight promise so the next call after a failure
+    // (or expiry) can attempt a fresh auth rather than hanging forever.
+    _authInFlight = null;
   }
+}
+
+export async function authenticate(): Promise<string> {
+  // Fast path: already have a fresh cached token
+  if (fresh()) return cache.tokenId!;
+
+  // FIX #5: If an auth is already in progress, return the same promise.
+  // This prevents N concurrent callers from each firing their own /Authenticate.
+  if (_authInFlight) return _authInFlight;
+
+  _authInFlight = _doAuthenticate();
+  return _authInFlight;
 }
 
 export const getEndUserIp = (): string => CREDS.EndUserIp;
