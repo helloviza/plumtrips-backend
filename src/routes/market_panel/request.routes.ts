@@ -4,31 +4,53 @@ import {
   hasCallbackErrors,
   buildCallbackPayload,
   isCallbackRequest,
+  
 } from "../../models/request.model.js";
-
+import CallbackRequestModel from "../../models/request.model.js";
 const router = Router();
 
 // POST /api/abx/requests
 router.post("/", async (req: Request, res: Response) => {
   try {
     const body = req.body;
+
     if (!isCallbackRequest(body)) {
-      return res.status(400).json({ success: false, message: "Invalid request body." });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request body."
+      });
     }
+
     const errors = validateCallbackRequest(body);
+
     if (hasCallbackErrors(errors)) {
-      return res.status(422).json({ success: false, message: "Validation failed.", errors });
+      return res.status(422).json({
+        success: false,
+        message: "Validation failed.",
+        errors
+      });
     }
+
     const source = (req.headers["x-source"] as string) ?? "footer";
+
     const payload = buildCallbackPayload(body, source);
 
-    // TODO: await CallbackRequestService.create(payload);
-    const requestId = `CB-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    // SAVE TO MONGO
+    const saved = await CallbackRequestModel.create(payload);
 
-    return res.status(201).json({ success: true, message: "We'll be in touch within 24 hours.", requestId });
+    return res.status(201).json({
+      success: true,
+      message: "We'll be in touch within 24 hours.",
+      requestId: saved._id,
+    });
+
   } catch (error) {
     console.error("[requests] POST error:", error);
-    return res.status(500).json({ success: false, message: "Something went wrong." });
+
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong."
+    });
   }
 });
 

@@ -1,5 +1,6 @@
 // models/request.model.ts
 
+import mongoose from "mongoose";
 export interface CallbackRequest {
   name: string;
   email: string;
@@ -104,3 +105,43 @@ export function buildCallbackPayload(
     source,
   };
 }
+
+
+const CallbackRequestSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+    },
+
+    email: {
+      type: String,
+      required: true,
+    },
+
+    phone: {
+      type: String,
+      required: true,
+    },
+
+    submittedAt: {
+      type: String,
+      required: true,
+    },
+
+    source: {
+      type: String,
+      default: "footer",
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+const CallbackRequestModel = mongoose.model(
+  "CallbackRequest",
+  CallbackRequestSchema
+);
+
+export default CallbackRequestModel;
