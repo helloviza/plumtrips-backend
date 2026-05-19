@@ -1,5 +1,8 @@
 // apps/backend/src/routes/flights/index.ts
 import { Router } from "express";
+// import Razorpay from "razorpay";
+import crypto from "crypto";
+
 import {
   searchFlights,
   getFareRule,
@@ -8,6 +11,7 @@ import {
   ticketFlight,
   getBookingDetails,
   getAirports,
+  getAirlines
 } from "../../services/tbo/flight.service.js";
 
 import {
@@ -29,11 +33,17 @@ const r = Router();
 const ok = (data: any) => ({ ok: true, data });
 const fail = (message: string, extra: any = {}) => ({ ok: false, message, ...extra });
 
+// ── Razorpay instance ─────────────────────────────────────────────────────
+// Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in your .env
+// const razorpay = new Razorpay({
+//   key_id:     process.env.RAZORPAY_KEY_ID     || "",
+//   key_secret: process.env.RAZORPAY_KEY_SECRET || "",
+// });
+
 /* ------------------------------------------------------------------ */
 /* Auth diagnostics                                                    */
 /* ------------------------------------------------------------------ */
 
-/** Quick check: confirms /Authenticate works and shows which base URLs are in use. */
 r.get("/tbo/_auth-debug", async (_req, res) => {
   try {
     const token = await authenticate();
@@ -42,23 +52,20 @@ r.get("/tbo/_auth-debug", async (_req, res) => {
         tokenPreview: token ? `${String(token).slice(0, 8)}…` : "(no token)",
         sharedBase: SHARED_BASE,
         flightBase: FLIGHT_BASE,
-        body: _authBodyForDebug(true), // masked
+        body: _authBodyForDebug(true),
       })
     );
   } catch (e: any) {
-    res
-      .status(400)
-      .json(
-        fail(axiosMessage(e), {
-          sharedBase: SHARED_BASE,
-          flightBase: FLIGHT_BASE,
-          body: _authBodyForDebug(true), // masked
-        })
-      );
+    res.status(400).json(
+      fail(axiosMessage(e), {
+        sharedBase: SHARED_BASE,
+        flightBase: FLIGHT_BASE,
+        body: _authBodyForDebug(true),
+      })
+    );
   }
 });
 
-/** Deep probe: calls TBO /Authenticate and relays the raw response. */
 r.get("/tbo/_auth-raw", async (_req, res) => {
   try {
     const { data, status } = await httpShared.post(
@@ -73,8 +80,6 @@ r.get("/tbo/_auth-raw", async (_req, res) => {
   }
 });
 
-/* Optional: raw Search probe that posts directly to TBO with a minimal body built here.
-   Useful for comparing what TBO returns vs your wrapped /tbo/search endpoint. */
 r.post("/tbo/_search-raw", async (req, res) => {
   try {
     const token = await authenticate();
@@ -89,7 +94,6 @@ r.post("/tbo/_search-raw", async (req, res) => {
       adults = 1,
       children = 0,
       infants = 0,
-      // Keep sources null unless your tenant requires explicit sources.
       sources = null,
       nonStopOnly = false,
       oneStopOnly = false,
@@ -139,7 +143,7 @@ r.post("/tbo/_search-raw", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Core Flight endpoints (wrap services)                               */
+/* Core Flight endpoints                                               */
 /* ------------------------------------------------------------------ */
 
 r.post("/tbo/search", async (req, res) => {
@@ -206,10 +210,153 @@ r.post("/tbo/booking-details", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Health check                                                         */
-/* GET /api/v1/flights/tbo/health                                       */
-/* Returns { ok, tokenOk, flightBase } so the frontend can verify the  */
-/* backend → TBO chain is reachable before making real API calls.      */
+/* Razorpay Payment Integration                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * POST /api/v1/flights/tbo/create-order
+ *
+ * Creates a Razorpay order for the given amount.
+ * The frontend calls this BEFORE opening Razorpay checkout.
+ * After the user pays, the frontend calls /verify-payment to confirm.
+ *
+ * Body: { amount: number (INR paise), currency?: string, receipt?: string, notes?: object }
+ */
+// r.post("/tbo/create-order", async (req, res) => {
+//   try {
+//     const { amount, currency = "INR", receipt, notes } = req.body || {};
+
+//     if (!amount || typeof amount !== "number" || amount < 100) {
+//       return res.status(400).json(fail("amount (in paise, minimum 100) is required"));
+//     }
+
+//     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+//       return res.status(500).json(fail(
+//         "Razorpay keys not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env"
+//       ));
+//     }
+
+//     const order = await razorpay.orders.create({
+//       amount: Math.round(amount),   // must be integer paise
+//       currency,
+//       receipt: receipt || `plum_${Date.now()}`,
+//       notes: notes || {},
+//     });
+
+//     console.log("[create-order] Razorpay order created:", order.id);
+//     res.json(ok({ orderId: order.id, amount: order.amount, currency: order.currency }));
+//   } catch (e: any) {
+//     console.error("[create-order] Razorpay error:", e.message);
+//     res.status(500).json(fail(e.message || "Failed to create Razorpay order"));
+//   }
+// });
+
+/**
+ * POST /api/v1/flights/tbo/verify-payment
+ *
+ * Verifies Razorpay payment signature server-side (HMAC-SHA256).
+ * Must be called BEFORE actually booking with TBO.
+ *
+ * Body: { razorpay_order_id, razorpay_payment_id, razorpay_signature }
+ */
+// r.post("/tbo/verify-payment", (req, res) => {
+//   try {
+//     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+
+//     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+//       return res.status(400).json(fail("razorpay_order_id, razorpay_payment_id, razorpay_signature are required"));
+//     }
+
+//     const keySecret = process.env.RAZORPAY_KEY_SECRET || "";
+//     const body = `${razorpay_order_id}|${razorpay_payment_id}`;
+//     const expectedSignature = crypto
+//       .createHmac("sha256", keySecret)
+//       .update(body)
+//       .digest("hex");
+
+//     if (expectedSignature !== razorpay_signature) {
+//       console.warn("[verify-payment] Signature mismatch — possible tampering");
+//       return res.status(400).json(fail("Payment verification failed — invalid signature"));
+//     }
+
+//     console.log("[verify-payment] ✅ Payment verified:", razorpay_payment_id);
+//     res.json(ok({ verified: true, paymentId: razorpay_payment_id }));
+//   } catch (e: any) {
+//     res.status(500).json(fail(e.message || "Verification error"));
+//   }
+// });
+
+/**
+ * POST /api/v1/flights/tbo/book-after-payment
+ *
+ * Combined endpoint: verifies Razorpay payment then books with TBO.
+ * This is the single call the frontend makes after Razorpay checkout succeeds.
+ *
+ * Body: {
+ *   razorpay_order_id, razorpay_payment_id, razorpay_signature,  ← payment proof
+ *   traceId, resultIndex, isLCC, passengers, contact, address, gst ← TBO booking params
+ * }
+ */
+// r.post("/tbo/book-after-payment", async (req, res) => {
+//   const {
+//     razorpay_order_id,
+//     razorpay_payment_id,
+//     razorpay_signature,
+//     ...bookingInput
+//   } = req.body || {};
+
+//   // 1. Verify payment first
+//   if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+//     return res.status(400).json(fail("Payment credentials missing"));
+//   }
+
+//   const keySecret = process.env.RAZORPAY_KEY_SECRET || "";
+//   const sigBody = `${razorpay_order_id}|${razorpay_payment_id}`;
+//   const expected = crypto
+//     .createHmac("sha256", keySecret)
+//     .update(sigBody)
+//     .digest("hex");
+
+//   if (expected !== razorpay_signature) {
+//     console.warn("[book-after-payment] Signature mismatch");
+//     return res.status(400).json(fail("Payment verification failed"));
+//   }
+
+//   console.log("[book-after-payment] Payment verified:", razorpay_payment_id);
+
+  // 2. Book with TBO
+//   try {
+//     const data = await bookFlight(bookingInput);
+
+//     // Extract booking details
+//     const bookingRes = data?.Response;
+//     const bookingId  = bookingRes?.BookingId ?? bookingRes?.TboBookingId;
+//     const pnr        = bookingRes?.PNR ?? bookingRes?.Passengers?.[0]?.SegmentAdditionalInfo?.[0]?.Pnr ?? "";
+
+//     res.json(ok({
+//       bookingId,
+//       pnr,
+//       paymentId: razorpay_payment_id,
+//       raw: data,
+//     }));
+//   } catch (e: any) {
+//     // IMPORTANT: Payment succeeded but TBO booking failed.
+//     // Log this as a critical event — manual reconciliation may be needed.
+//     console.error("[book-after-payment] ❌ TBO booking failed AFTER payment:", {
+//       paymentId: razorpay_payment_id,
+//       orderId: razorpay_order_id,
+//       error: e.message,
+//     });
+//     res.status(500).json(fail(
+//       `Payment received but booking failed: ${e.message}. ` +
+//       `Please contact support with payment ID: ${razorpay_payment_id}`,
+//       { paymentId: razorpay_payment_id, criticalFailure: true }
+//     ));
+//   }
+// });
+
+/* ------------------------------------------------------------------ */
+/* Health check                                                        */
 /* ------------------------------------------------------------------ */
 
 r.get("/tbo/health", async (_req, res) => {
@@ -224,15 +371,15 @@ r.get("/tbo/health", async (_req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Airport list                                                         */
-/* GET /api/v1/flights/tbo/airports                                     */
-/* Returns the curated static airport list. The frontend fetches this  */
-/* at runtime instead of bundling it, so we can later swap to a real   */
-/* TBO SharedData call without touching frontend code.                 */
+/* Airport list                                                        */
 /* ------------------------------------------------------------------ */
 
 r.get("/tbo/airports", (_req, res) => {
   res.json(ok(getAirports()));
+});
+
+r.get("/tbo/airlines", (_req, res) => {
+  res.json(ok(getAirlines()));
 });
 
 export default r;

@@ -13,6 +13,22 @@ export const FLIGHT_BASE =
   process.env.TBO_FLIGHT_BASE_URL ||
   "https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest";
 
+
+
+/** Hotel Search / PreBook / GetBookingDetails / Cancel — affiliate HotelAPI (typical) */
+export const HOTEL_BASE =
+  process.env.TBO_HOTEL_BASE_URL ||
+  "https://affiliate.tektravels.com/HotelAPI";
+
+/** Hotel final Book only — `HotelService.svc/rest/Book` (see TBO HotelService docs) */
+export const HOTEL_BOOK_BASE =
+  process.env.TBO_HOTEL_BOOK_BASE_URL ||
+  "http://HotelApi.tektravels.com/BookingEngineService_Hotel/HotelService.svc/rest";
+
+export const HOTEL_STATIC_BASE =
+  process.env.TBO_HOTEL_STATIC_BASE_URL ||
+  "http://api.tbotechnology.in/TBOHolidays_HotelAPI";
+
 /** One place to control HTTP timeouts (90s default) */
 const TIMEOUT = Number(process.env.TBO_HTTP_TIMEOUT_MS || 90_000);
 
@@ -27,6 +43,25 @@ export const httpFlight = axios.create({
   headers: { "Content-Type": "application/json", Accept: "application/json" },
   timeout: TIMEOUT,
 });
+
+export const httpHotel = axios.create({
+  baseURL: HOTEL_BASE,
+  headers: { "Content-Type": "application/json", Accept: "application/json" },
+  timeout: TIMEOUT,
+});
+
+export const httpHotelStatic = axios.create({
+  baseURL: HOTEL_STATIC_BASE,
+  headers: { "Content-Type": "application/json", Accept: "application/json" },
+  timeout: TIMEOUT,
+});
+
+export const httpHotelBook = axios.create({
+  baseURL: HOTEL_BOOK_BASE,
+  headers: { "Content-Type": "application/json", Accept: "application/json" },
+  timeout: TIMEOUT,
+});
+
 
 /** Helpers that other files already import */
 export function withTimeout(ms: number) {
