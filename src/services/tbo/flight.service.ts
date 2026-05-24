@@ -1,8 +1,8 @@
 // apps/backend/src/services/tbo/flight.service.ts
 import { httpFlight } from "../../lib/http.js";
 import { authenticate, getEndUserIp } from "./auth.service.js";
-import airports from "../../data/airports.json" ;
-import airlines from "../../data/airlines.json" ;
+import airports from "../../data/airports.json" with { type: 'json' }; ;
+import airlines from "../../data/airlines.json" with {type: 'json'};
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
