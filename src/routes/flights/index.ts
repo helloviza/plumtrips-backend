@@ -7,6 +7,7 @@ import {
   searchFlights,
   getFareRule,
   getFareQuote,
+  getSSR,
   bookFlight,
   ticketFlight,
   getBookingDetails,
@@ -382,4 +383,13 @@ r.get("/tbo/airlines", (_req, res) => {
   res.json(ok(getAirlines()));
 });
 
+
+r.post("/tbo/ssr", async (req, res) => {
+  try {
+    const data = await getSSR(req.body);
+    res.json(ok(data));
+  } catch (e: any) {
+    res.status(400).json(fail(axiosMessage(e)));
+  }
+});
 export default r;

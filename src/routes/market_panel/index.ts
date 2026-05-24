@@ -14,6 +14,6 @@ router.use("/cruises", cruisesRouter);
 router.use("/offers", offersRouter);
 router.use("/blogs", blogsRouter);
 router.use("/frontpage", frontpage);
-router.use("/requests",request)
+router.use("/requests",request);
 
 export default router;

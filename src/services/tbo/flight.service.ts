@@ -307,6 +307,58 @@ export async function getFareQuote(input: { traceId: string; resultIndex: string
 }
 
 /* ------------------------------------------------------------------ */
+/* SSR — Seat Map + Meals + Baggage                                    */
+/* ------------------------------------------------------------------ */
+
+export type SSRInput = {
+  traceId: string;
+  resultIndex: string | number;
+};
+
+export async function getSSR(input: SSRInput) {
+  const { traceId, resultIndex } = input || {};
+  if (!traceId || resultIndex === undefined || resultIndex === null) {
+    throw new Error("traceId and resultIndex are required");
+  }
+
+  const TokenId = await authenticate();
+  const EndUserIp = getEndUserIp();
+
+  const body = {
+    EndUserIp,
+    TokenId,
+    TraceId: String(traceId),
+    ResultIndex: resultIndex,
+  };
+
+  console.log("[getSSR] Fetching SSR for ResultIndex:", resultIndex);
+
+  const { data } = await httpFlight.post("/SSR", body, {
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+  });
+
+  const err = data?.Response?.Error;
+  if (err && err.ErrorCode && err.ErrorCode !== 0) {
+    // ErrorCode 6 / 25 = no SSR available — not a fatal error
+    // Return empty structure so the frontend falls back to static options
+    if (err.ErrorCode === 6 || err.ErrorCode === 25) {
+      console.log(`[getSSR] No SSR available (ErrorCode ${err.ErrorCode}) — returning empty`);
+      return {
+        Response: {
+          ResponseStatus: 1,
+          Error: { ErrorCode: 0, ErrorMessage: "" },
+          SeatDynamic: [],
+          SSRDynamic: [],
+        },
+      };
+    }
+    throw new Error(err.ErrorMessage || "SSR fetch failed");
+  }
+
+  return data;
+}
+
+/* ------------------------------------------------------------------ */
 /* Book / Ticket / GetBookingDetails                                   */
 /* ------------------------------------------------------------------ */
 
