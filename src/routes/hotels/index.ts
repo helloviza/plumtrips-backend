@@ -447,6 +447,7 @@ r.post("/book", async (req: Request, res: Response) => {
     if (!g.lastName  || !String(g.lastName).trim()  || String(g.lastName).trim().length  < 2) guestErrors.push(`${p}.lastName is required (min 2 chars)`);
     if (!VALID_PAX_TYPES.includes(Number(g.paxType)))                             guestErrors.push(`${p}.paxType must be 1 (Adult) or 2 (Child)`);
     if (Number(g.paxType) === 2 && (g.age == null || Number(g.age) < 1 || Number(g.age) > 12)) guestErrors.push(`${p}.age is required for children and must be 1–12`);
+    if (g.pan && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(String(g.pan).toUpperCase())) guestErrors.push(`${p}.pan must be a valid 10-character PAN`);
     if (g.leadGuest === true) leadCount++;
   }
   if (leadCount !== 1) guestErrors.push("Exactly one guest must have leadGuest: true");

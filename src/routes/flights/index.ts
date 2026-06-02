@@ -1,6 +1,5 @@
 // apps/backend/src/routes/flights/index.ts
 import { Router } from "express";
-// import Razorpay from "razorpay";
 import crypto from "crypto";
 
 import {
@@ -12,7 +11,8 @@ import {
   ticketFlight,
   getBookingDetails,
   getAirports,
-  getAirlines
+  getAirlines,
+  getCalendarPrices,
 } from "../../services/tbo/flight.service.js";
 
 import {
@@ -31,15 +31,8 @@ import {
 
 const r = Router();
 
-const ok = (data: any) => ({ ok: true, data });
+const ok   = (data: any)                        => ({ ok: true, data });
 const fail = (message: string, extra: any = {}) => ({ ok: false, message, ...extra });
-
-// ── Razorpay instance ─────────────────────────────────────────────────────
-// Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in your .env
-// const razorpay = new Razorpay({
-//   key_id:     process.env.RAZORPAY_KEY_ID     || "",
-//   key_secret: process.env.RAZORPAY_KEY_SECRET || "",
-// });
 
 /* ------------------------------------------------------------------ */
 /* Auth diagnostics                                                    */
@@ -110,7 +103,7 @@ r.post("/tbo/_search-raw", async (req, res) => {
       Destination: String(d || "").toUpperCase(),
       FlightCabinClass: String(cabinClass),
       PreferredDepartureTime: `${date}T00:00:00`,
-      PreferredArrivalTime: `${date}T00:00:00`,
+      PreferredArrivalTime:   `${date}T00:00:00`,
     });
 
     const Segments: any[] = [seg(departDate, origin, destination)];
@@ -120,11 +113,11 @@ r.post("/tbo/_search-raw", async (req, res) => {
     const body = {
       EndUserIp,
       TokenId: token,
-      AdultCount: String(adults),
-      ChildCount: String(children),
-      InfantCount: String(infants),
-      DirectFlight: nonStopOnly ? "true" : "false",
-      OneStopFlight: oneStopOnly ? "true" : "false",
+      AdultCount:        String(adults),
+      ChildCount:        String(children),
+      InfantCount:       String(infants),
+      DirectFlight:      nonStopOnly ? "true" : "false",
+      OneStopFlight:     oneStopOnly ? "true" : "false",
       JourneyType,
       PreferredAirlines:
         Array.isArray(preferredAirlines) && preferredAirlines.length
@@ -179,16 +172,24 @@ r.post("/tbo/fare-quote", async (req, res) => {
     const data = await getFareQuote(req.body);
     res.json(ok(data));
   } catch (e: any) {
-    res.status(400).json(fail(axiosMessage(e)));
+    const msg = axiosMessage(e);
+    if (msg === "SESSION_EXPIRED") {
+      return res.status(410).json(fail("Your search has expired. Please search again for updated fares."));
+    }
+    res.status(400).json(fail(msg));
   }
 });
 
 r.post("/tbo/book", async (req, res) => {
   try {
+    console.log("[/tbo/book] Incoming request body:", JSON.stringify(req.body, null, 2));
     const data = await bookFlight(req.body);
     res.json(ok(data));
   } catch (e: any) {
-    res.status(400).json(fail(axiosMessage(e)));
+    const errMsg = axiosMessage(e);
+    console.error("[/tbo/book] Error:", errMsg);
+    console.error("[/tbo/book] Full error:", e);
+    res.status(400).json(fail(errMsg));
   }
 });
 
@@ -210,151 +211,72 @@ r.post("/tbo/booking-details", async (req, res) => {
   }
 });
 
+r.post("/tbo/ssr", async (req, res) => {
+  try {
+const data = await getSSR({
+  traceId:            req.body.traceId,
+  resultIndex:        req.body.resultIndex,
+  allResultIndexes:   req.body.allResultIndexes,   // NEW — for multi-city
+  skipFareQuote:      req.body.skipFareQuote === true,
+});
+    res.json(ok(data));
+  } catch (e: any) {
+    console.warn("[tbo/ssr] SSR fetch threw — returning empty:", axiosMessage(e));
+    res.json(ok({
+      Response: {
+        ResponseStatus: 1,
+        Error: { ErrorCode: 0, ErrorMessage: "" },
+        SeatDynamic: [],
+        MealDynamic: [],
+        Baggage: [],
+        SSRDynamic: [],
+      },
+    }));
+  }
+});
+
 /* ------------------------------------------------------------------ */
-/* Razorpay Payment Integration                                        */
+/* Calendar Prices                                                     */
 /* ------------------------------------------------------------------ */
 
 /**
- * POST /api/v1/flights/tbo/create-order
+ * GET /api/v1/flights/calendar-prices?from=DEL&to=BOM&cabinClass=2
  *
- * Creates a Razorpay order for the given amount.
- * The frontend calls this BEFORE opening Razorpay checkout.
- * After the user pays, the frontend calls /verify-payment to confirm.
+ * Returns a map of { "YYYY-MM-DD": lowestFareINR } for the next 60 days.
+ * Used by the frontend CalendarPopup to show per-date price hints.
  *
- * Body: { amount: number (INR paise), currency?: string, receipt?: string, notes?: object }
+ * Query params:
+ *   from        — IATA origin code        (required)
+ *   to          — IATA destination code   (required)
+ *   cabinClass  — TBO cabin class number  (optional, default 2 = Economy)
  */
-// r.post("/tbo/create-order", async (req, res) => {
-//   try {
-//     const { amount, currency = "INR", receipt, notes } = req.body || {};
+r.get("/calendar-prices", async (req, res) => {
+  try {
+    const from       = String(req.query.from       || "").toUpperCase().trim();
+    const to         = String(req.query.to         || "").toUpperCase().trim();
+    const cabinClass = Number(req.query.cabinClass  || 2);
 
-//     if (!amount || typeof amount !== "number" || amount < 100) {
-//       return res.status(400).json(fail("amount (in paise, minimum 100) is required"));
-//     }
+    if (!from || !to) {
+      return res.status(400).json(fail("Query params 'from' and 'to' are required"));
+    }
+    if (from === to) {
+      return res.status(400).json(fail("'from' and 'to' must be different airports"));
+    }
 
-//     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-//       return res.status(500).json(fail(
-//         "Razorpay keys not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env"
-//       ));
-//     }
+    console.log(`[calendar-prices] Fetching prices for ${from}→${to} cabinClass=${cabinClass}`);
 
-//     const order = await razorpay.orders.create({
-//       amount: Math.round(amount),   // must be integer paise
-//       currency,
-//       receipt: receipt || `plum_${Date.now()}`,
-//       notes: notes || {},
-//     });
+    const priceMap = await getCalendarPrices({ from, to, cabinClass });
 
-//     console.log("[create-order] Razorpay order created:", order.id);
-//     res.json(ok({ orderId: order.id, amount: order.amount, currency: order.currency }));
-//   } catch (e: any) {
-//     console.error("[create-order] Razorpay error:", e.message);
-//     res.status(500).json(fail(e.message || "Failed to create Razorpay order"));
-//   }
-// });
+    console.log(
+      `[calendar-prices] ✅ Returning ${Object.keys(priceMap).length} dates for ${from}→${to}`
+    );
 
-/**
- * POST /api/v1/flights/tbo/verify-payment
- *
- * Verifies Razorpay payment signature server-side (HMAC-SHA256).
- * Must be called BEFORE actually booking with TBO.
- *
- * Body: { razorpay_order_id, razorpay_payment_id, razorpay_signature }
- */
-// r.post("/tbo/verify-payment", (req, res) => {
-//   try {
-//     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
-
-//     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-//       return res.status(400).json(fail("razorpay_order_id, razorpay_payment_id, razorpay_signature are required"));
-//     }
-
-//     const keySecret = process.env.RAZORPAY_KEY_SECRET || "";
-//     const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-//     const expectedSignature = crypto
-//       .createHmac("sha256", keySecret)
-//       .update(body)
-//       .digest("hex");
-
-//     if (expectedSignature !== razorpay_signature) {
-//       console.warn("[verify-payment] Signature mismatch — possible tampering");
-//       return res.status(400).json(fail("Payment verification failed — invalid signature"));
-//     }
-
-//     console.log("[verify-payment] ✅ Payment verified:", razorpay_payment_id);
-//     res.json(ok({ verified: true, paymentId: razorpay_payment_id }));
-//   } catch (e: any) {
-//     res.status(500).json(fail(e.message || "Verification error"));
-//   }
-// });
-
-/**
- * POST /api/v1/flights/tbo/book-after-payment
- *
- * Combined endpoint: verifies Razorpay payment then books with TBO.
- * This is the single call the frontend makes after Razorpay checkout succeeds.
- *
- * Body: {
- *   razorpay_order_id, razorpay_payment_id, razorpay_signature,  ← payment proof
- *   traceId, resultIndex, isLCC, passengers, contact, address, gst ← TBO booking params
- * }
- */
-// r.post("/tbo/book-after-payment", async (req, res) => {
-//   const {
-//     razorpay_order_id,
-//     razorpay_payment_id,
-//     razorpay_signature,
-//     ...bookingInput
-//   } = req.body || {};
-
-//   // 1. Verify payment first
-//   if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-//     return res.status(400).json(fail("Payment credentials missing"));
-//   }
-
-//   const keySecret = process.env.RAZORPAY_KEY_SECRET || "";
-//   const sigBody = `${razorpay_order_id}|${razorpay_payment_id}`;
-//   const expected = crypto
-//     .createHmac("sha256", keySecret)
-//     .update(sigBody)
-//     .digest("hex");
-
-//   if (expected !== razorpay_signature) {
-//     console.warn("[book-after-payment] Signature mismatch");
-//     return res.status(400).json(fail("Payment verification failed"));
-//   }
-
-//   console.log("[book-after-payment] Payment verified:", razorpay_payment_id);
-
-  // 2. Book with TBO
-//   try {
-//     const data = await bookFlight(bookingInput);
-
-//     // Extract booking details
-//     const bookingRes = data?.Response;
-//     const bookingId  = bookingRes?.BookingId ?? bookingRes?.TboBookingId;
-//     const pnr        = bookingRes?.PNR ?? bookingRes?.Passengers?.[0]?.SegmentAdditionalInfo?.[0]?.Pnr ?? "";
-
-//     res.json(ok({
-//       bookingId,
-//       pnr,
-//       paymentId: razorpay_payment_id,
-//       raw: data,
-//     }));
-//   } catch (e: any) {
-//     // IMPORTANT: Payment succeeded but TBO booking failed.
-//     // Log this as a critical event — manual reconciliation may be needed.
-//     console.error("[book-after-payment] ❌ TBO booking failed AFTER payment:", {
-//       paymentId: razorpay_payment_id,
-//       orderId: razorpay_order_id,
-//       error: e.message,
-//     });
-//     res.status(500).json(fail(
-//       `Payment received but booking failed: ${e.message}. ` +
-//       `Please contact support with payment ID: ${razorpay_payment_id}`,
-//       { paymentId: razorpay_payment_id, criticalFailure: true }
-//     ));
-//   }
-// });
+    res.json(ok(priceMap));
+  } catch (e: any) {
+    console.error("[calendar-prices] ❌ error:", e.message);
+    res.status(500).json(fail(e.message || "Failed to fetch calendar prices"));
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /* Health check                                                        */
@@ -372,7 +294,7 @@ r.get("/tbo/health", async (_req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Airport list                                                        */
+/* Airport / Airline lists                                             */
 /* ------------------------------------------------------------------ */
 
 r.get("/tbo/airports", (_req, res) => {
@@ -383,13 +305,4 @@ r.get("/tbo/airlines", (_req, res) => {
   res.json(ok(getAirlines()));
 });
 
-
-r.post("/tbo/ssr", async (req, res) => {
-  try {
-    const data = await getSSR(req.body);
-    res.json(ok(data));
-  } catch (e: any) {
-    res.status(400).json(fail(axiosMessage(e)));
-  }
-});
 export default r;

@@ -12,6 +12,7 @@ import oauthRoutes from "./routes/oauth.js";
 import meRouter from "./routes/me.js";
 import hotelsRouter from "./routes/hotels/index.js"; // NOTE: swapped? verify below
 import flightsRouter from "./routes/flights/index.js"; // NOTE: swapped? verify below
+import paymentsRouter from "./routes/payment.js";
 import ssoRoutes from "./routes/sso.js";
 import authRoutes from "./routes/auth.js";
 import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
@@ -115,6 +116,7 @@ app.use("/api/v1/me", meRouter);
 // set them like below. (Your earlier snippet showed the correct order.)
 app.use("/api/v1/flights", flightsRouter);
 app.use("/api/v1/hotels", hotelsRouter);
+app.use("/api/v1/payments", paymentsRouter);
 
 app.use("/api/v1/sso", ssoRoutes);
 

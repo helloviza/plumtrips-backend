@@ -548,13 +548,13 @@ async function fetchCitiesForCountry(countryCode: string): Promise<TboCityRow[]>
 }
 
 function filterCitiesByQuery(cities: TboCityRow[], query: string): TboCityRow[] {
-  const q = query.trim().toLowerCase();
+  const q = query.split(',')[0].trim().toLowerCase();
   if (!q) return [];
   return cities.filter((c) => c.Name.toLowerCase().includes(q));
 }
 
 function rankCityMatches(cities: TboCityRow[], query: string): TboCityRow[] {
-  const q = query.trim().toLowerCase();
+  const q = query.split(',')[0].trim().toLowerCase();
   return [...cities].sort((a, b) => {
     const an = a.Name.toLowerCase();
     const bn = b.Name.toLowerCase();
@@ -683,7 +683,9 @@ export async function getCityList(cityName: string, countryCode?: string) {
 
 /** POST /TBOHotelCodeList — { CityCode } */
 export async function getHotelCodeListByCity(cityCode: string) {
-  return tboStaticPost("/TBOHotelCodeList", { CityCode: cityCode });
+  let finalCode = cityCode;
+  if (finalCode.includes(":")) finalCode = finalCode.split(":")[1];
+  return tboStaticPost("/TBOHotelCodeList", { CityCode: finalCode });
 }
 
 /** GET /HotelCodeList — all hotels (large) */
@@ -691,10 +693,34 @@ export async function getAllHotelCodeList() {
   return tboStaticGet("/HotelCodeList");
 }
 
-/** POST /Hoteldetails — { Hotelcodes, Language } */
 export async function getHotelStaticDetails(hotelCodes: string | string[]) {
-  const codes = Array.isArray(hotelCodes) ? hotelCodes.join(",") : hotelCodes;
-  return tboStaticPost("/Hoteldetails", { Hotelcodes: codes, Language: "en" });
+  const codesArray = Array.isArray(hotelCodes) ? hotelCodes : hotelCodes.split(",");
+  const cleanedCodes = codesArray.map(c => c.trim()).filter(Boolean);
+  const CHUNK_SIZE = 100;
+  const chunks = [];
+  for (let i = 0; i < cleanedCodes.length; i += CHUNK_SIZE) {
+    chunks.push(cleanedCodes.slice(i, i + CHUNK_SIZE).join(","));
+  }
+
+  const allStaticDetails: any[] = [];
+  const CONCURRENCY = 20;
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(
+      batch.map(async (chunkCodes) => {
+        try {
+          const res = await tboStaticPost("/Hoteldetails", { Hotelcodes: chunkCodes, Language: "en" });
+          const details = (res as any)?.HotelDetails;
+          if (Array.isArray(details)) {
+            allStaticDetails.push(...details);
+          }
+        } catch (e) {
+          console.error("Static details chunk failed", e);
+        }
+      })
+    );
+  }
+  return { HotelDetails: allStaticDetails };
 }
 
 /* ================================================================== */
@@ -750,33 +776,105 @@ export async function searchHotels(input: HotelSearchInput) {
   const traceId = (input.traceId && String(input.traceId).trim()) || randomUUID();
   const tokenId = await authenticate();
 
-  const raw = await tboPost("/Search", {
-    CheckIn:            toTboDate(checkIn),
-    CheckOut:           toTboDate(checkOut),
-    HotelCodes:         hotelCodes,          // ← comma-separated hotel codes
-    GuestNationality:   nationality,
-    NoOfRooms:          rooms,
-    PaxRooms,
-    ResponseTime:       23,
-    IsDetailedResponse: false,
-    Filters: {
-      Refundable: false,
-      NoOfRooms:  0,
-      MealType:   0,
-      OrderBy:    0,
-      StarRating: 0,
-      HotelName:  null,
-    },
-    TokenId:  tokenId,
-    TraceId:  traceId,
-  });
-
-  const echoed = (raw as any)?.Response?.TraceId;
-  const outTrace = typeof echoed === "string" && echoed.trim() ? echoed.trim() : traceId;
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    return { ...(raw as Record<string, unknown>), traceId: outTrace };
+  const codesArray = hotelCodes.split(',').map(c => c.trim()).filter(Boolean);
+  const CHUNK_SIZE = 100;
+  const chunks = [];
+  for (let i = 0; i < codesArray.length; i += CHUNK_SIZE) {
+    chunks.push(codesArray.slice(i, i + CHUNK_SIZE).join(','));
   }
-  return raw;
+
+  const allHotelResults: any[] = [];
+  let firstTraceId = traceId;
+  let firstResponseRaw: any = null;
+
+  // Process chunks with a smaller concurrency limit and retries to prevent TBO rate-limiting/dropping chunks
+  const CONCURRENCY = 5;
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(
+      batch.map(async (chunkCodes) => {
+        const chunkTraceId = randomUUID();
+        
+        let raw: any = null;
+        let lastErr: any = null;
+        // Retry logic: up to 3 attempts per chunk
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            raw = await tboPost("/Search", {
+              CheckIn:            toTboDate(checkIn),
+              CheckOut:           toTboDate(checkOut),
+              HotelCodes:         chunkCodes,
+              GuestNationality:   nationality,
+              NoOfRooms:          rooms,
+              PaxRooms,
+              ResponseTime:       23,
+              IsDetailedResponse: false,
+              Filters: {
+                Refundable: false,
+                NoOfRooms:  0,
+                MealType:   0,
+                OrderBy:    0,
+                StarRating: 0,
+                HotelName:  null,
+              },
+              TokenId:  tokenId,
+              TraceId:  chunkTraceId,
+            });
+            break; // Success, break out of retry loop
+          } catch (err) {
+            lastErr = err;
+            if (attempt === 3) throw err;
+            // Wait before retrying (exponential backoff)
+            await new Promise(res => setTimeout(res, attempt * 1000));
+          }
+        }
+        
+        if (!raw) throw lastErr;
+
+        const echoed = (raw as any)?.Response?.TraceId || (raw as any)?.TraceId;
+        const outTrace = typeof echoed === "string" && echoed.trim() ? echoed.trim() : chunkTraceId;
+        
+        if (!firstResponseRaw) firstResponseRaw = raw;
+        if (i === 0) firstTraceId = outTrace;
+
+        const results = (raw as any)?.Response?.HotelResult || (raw as any)?.HotelResult;
+        if (Array.isArray(results)) {
+          // Inject the specific TraceId for this chunk into each hotel
+          results.forEach(h => {
+            h._traceId = outTrace;
+          });
+          allHotelResults.push(...results);
+        }
+      })
+    );
+  }
+
+  // Deduplicate hotels by HotelCode (TBO Sandbox sometimes returns the same hotels across different chunks)
+  const uniqueHotelsMap = new Map();
+  for (const h of allHotelResults) {
+    if (h && (h.HotelCode || h.hotelCode)) {
+      const code = h.HotelCode || h.hotelCode;
+      if (!uniqueHotelsMap.has(code)) {
+        uniqueHotelsMap.set(code, h);
+      }
+    }
+  }
+  const uniqueHotelResults = Array.from(uniqueHotelsMap.values());
+
+  // Construct a merged response matching the expected format
+  const mergedResponse = {
+    ...((firstResponseRaw as Record<string, unknown>) || {}),
+    traceId: firstTraceId,
+    Response: {
+      ...((firstResponseRaw as any)?.Response || {}),
+      ResponseStatus: 1,
+      TraceId: firstTraceId,
+      HotelResult: uniqueHotelResults
+    },
+    HotelResult: uniqueHotelResults
+  };
+
+  return mergedResponse;
 }
 
 /* ------------------------------------------------------------------ */
@@ -939,6 +1037,7 @@ export async function bookHotel(input: BookInput) {
     );
   }
 
+  const leadPan = guests.find(g => g.leadGuest)?.pan;
   const guestToTboPassenger = (g: BookGuest) => ({
     Title:          g.title,
     FirstName:      g.firstName.trim(),
@@ -952,7 +1051,7 @@ export async function bookHotel(input: BookInput) {
     ...(g.passportNo        ? { PassportNo: g.passportNo } : {}),
     ...(g.passportIssueDate ? { PassportIssueDate: g.passportIssueDate } : {}),
     ...(g.passportExpDate   ? { PassportExpDate: g.passportExpDate } : {}),
-    ...(g.pan               ? { PAN: g.pan } : {}),
+    ...(g.pan ? { PAN: g.pan, Pan: g.pan } : leadPan ? { PAN: leadPan, Pan: leadPan } : {}),
   });
 
   // ── Step 1: Call PreBook to get authoritative pricing from TBO ──────────────
@@ -1092,6 +1191,15 @@ export async function bookHotel(input: BookInput) {
       RequestedBookingMode:   bookingMode,
       ClientReferenceId:      `pt-${randomUUID().replace(/-/g, "")}`.slice(0, 40),
     };
+    
+    // Some versions of the TBO API expect PAN at the root level instead of/in addition to the passenger level
+    const leadPan = guests.find(g => g.leadGuest)?.pan;
+    if (leadPan) {
+      b.PAN = leadPan;
+      b.PanNumber = leadPan;
+      b.Pan = leadPan;
+    }
+    
     if (taxes !== undefined && Number.isFinite(taxes)) b.Taxes = taxes;
     b.IsPackageFare             = isPackageFare             !== undefined ? isPackageFare             : tboIsPackageFare;
     b.IsPackageDetailsMandatory = isPackageDetailsMandatory !== undefined ? isPackageDetailsMandatory : tboIsPackageDetailsMandatory;
