@@ -7,6 +7,7 @@ import frontpage from "./frontpage.js"
 import request from "./request.routes.js"
 import tripenquiry from "./tripenquiry.js"
 import countryenquiry from "./countryEnquiry.routes.js"
+import homeCarousel from "./HomeCarousel.routes.js";
 
 const router = express.Router();
 
@@ -19,5 +20,6 @@ router.use("/frontpage", frontpage);
 router.use("/requests",request);
 router.use("/tripenquiry",tripenquiry);
 router.use("/countryenuiry",countryenquiry)
+router.use("/homeCarousel", homeCarousel);
 
 export default router;
