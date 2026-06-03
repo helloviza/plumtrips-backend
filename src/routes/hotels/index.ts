@@ -311,7 +311,10 @@ r.post("/search", async (req: Request, res: Response) => {
   if (!Number.isInteger(roomsN)  || roomsN  < 1 || roomsN  > 9) return res.status(400).json(fail("rooms must be an integer between 1 and 9"));
   if (!Number.isInteger(adultsN) || adultsN < 1 || adultsN > 8) return res.status(400).json(fail("adults must be an integer between 1 and 8"));
   if (!Number.isInteger(childN)  || childN  < 0 || childN  > 4) return res.status(400).json(fail("children must be an integer between 0 and 4"));
-  if (childN > 0 && ages.length !== childN) return res.status(400).json(fail(`childrenAges must have exactly ${childN} entr${childN === 1 ? "y" : "ies"} (e.g. [5] for one child aged 5)`));
+  if (childN > 0 && ages.length !== childN) {
+    console.error("DEBUG: childN=", childN, "ages=", ages, "childrenAges=", childrenAges, "rawAges=", rawAges, "req.body=", req.body);
+    return res.status(400).json(fail(`childrenAges must have exactly ${childN} entr${childN === 1 ? "y" : "ies"} (e.g. [5] for one child aged 5)`));
+  }
   if (ages.some((a) => !Number.isInteger(a) || a < 0 || a > 18)) return res.status(400).json(fail("each child age must be an integer between 0 and 18"));
 
   const nat = nationality ? String(nationality).trim().toUpperCase() : "IN";
