@@ -14,6 +14,8 @@
 //   5. POST /book { bookingCode, traceId, guests, ... } → confirm booking
 
 import { Router, type Request, type Response } from "express";
+import crypto from "crypto";
+import { HotelBooking } from "../../models/hotelBooking.model.js";
 import {
   getCountryList,
   getCityList,
@@ -415,6 +417,7 @@ r.post("/book", async (req: Request, res: Response) => {
     isPackageFare, isPackageDetailsMandatory,
     arrivalTransport, departureTransport,
     rooms, adults, children,
+    hotelId, hotelName, location, checkIn, checkOut, priceDetails, roomDetails
   } = req.body || {};
 
   // Required fields
@@ -523,9 +526,51 @@ r.post("/book", async (req: Request, res: Response) => {
       tboReferenceNo:     bookResult?.TBOReferenceNo,
     });
 
+    const pnr = `PT-HTL-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+
+    // Async DB save (non-blocking)
+    if (hotelId) {
+      HotelBooking.create({
+        pnr,
+        user: (req as any).user?.id || undefined, // If authentication middleware sets req.user
+        tboBookingId: bookResult?.TBOReferenceNo || bookResult?.BookingRefNo,
+        tboConfirmationNo: bookResult?.ConfirmationNo || bookingId,
+        hotelId,
+        hotelName,
+        location,
+        checkIn: checkIn ? new Date(checkIn) : new Date(),
+        checkOut: checkOut ? new Date(checkOut) : new Date(),
+        status: bookResult?.HotelBookingStatus || "Confirmed",
+        contactInfo: {
+          email: String(contact.email).trim().toLowerCase(),
+          mobile: String(contact.mobile).trim(),
+        },
+        guests: (guests as any[]).map(g => ({
+          title: g.title,
+          firstName: g.firstName,
+          lastName: g.lastName,
+          paxType: g.paxType,
+          age: g.age,
+          leadGuest: g.leadGuest,
+          pan: g.pan,
+        })),
+        rooms: roomDetails || [],
+        priceDetails: priceDetails || {
+          total: 0,
+          taxes: 0,
+          additionalCharges: 0,
+        },
+        traceId: String(traceId).trim(),
+        rawTboResponse: bookResult,
+      }).catch((err: any) => {
+        console.error("[hotel-book] Error persisting booking to DB:", err);
+      });
+    }
+
     return res.json(ok({
       ...((data as any) ?? {}),
       // Convenience fields for the frontend
+      pnr,
       bookingId,
       hotelBookingStatus: bookResult?.HotelBookingStatus ?? null,
       invoiceNumber:      bookResult?.InvoiceNumber      ?? null,
@@ -582,6 +627,25 @@ r.post("/cancel", async (req: Request, res: Response) => {
   } catch (err: any) {
     if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
     return res.status(400).json(fail(errMsg(err)));
+  }
+});
+
+/**
+ * GET /api/v1/hotels/booking/:pnr
+ * Fetch booking details by PNR
+ */
+r.get("/booking/:pnr", async (req: Request, res: Response) => {
+  const { pnr } = req.params;
+  if (!pnr) return res.status(400).json(fail("pnr parameter is required"));
+
+  try {
+    const booking = await HotelBooking.findOne({ pnr: pnr.trim().toUpperCase() });
+    if (!booking) {
+      return res.status(404).json(fail("Booking not found"));
+    }
+    return res.json(ok(booking));
+  } catch (err: any) {
+    return res.status(500).json(fail(errMsg(err)));
   }
 });
 

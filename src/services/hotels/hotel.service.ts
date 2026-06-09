@@ -743,6 +743,7 @@ export type HotelSearchInput = {
   adults:        number;   // 1–8 per room
   children?:     number;   // 0–4 per room
   childrenAges?: number[]; // required if children > 0, each 0–18
+  roomGuests?:   Array<{ adults: number; children: number; childrenAges: number[] }>;
   nationality?:  string;   // 2-letter ISO, default "IN"
   /** Optional; if omitted a new UUID is generated and echoed as `traceId` on the response */
   traceId?:      string;
@@ -752,26 +753,47 @@ export async function searchHotels(input: HotelSearchInput) {
   const {
     hotelCodes, checkIn, checkOut, rooms, adults,
     children = 0, childrenAges = [],
+    roomGuests,
     nationality = "IN",
   } = input;
 
   validateDateRange(checkIn, checkOut);
 
   if (rooms < 1 || rooms > 9)     throw new Error("rooms must be between 1 and 9");
-  if (adults < 1 || adults > 8)   throw new Error("adults must be between 1 and 8 per room");
-  if (children < 0 || children > 4) throw new Error("children must be between 0 and 4 per room");
-  if (children > 0 && childrenAges.length !== children) {
-    throw new Error(`childrenAges must have exactly ${children} entr${children === 1 ? "y" : "ies"}`);
-  }
-  if (childrenAges.some((age) => age < 0 || age > 18)) {
-    throw new Error("each child age must be between 0 and 18");
-  }
 
-  const PaxRooms = Array.from({ length: rooms }, () => ({
-    Adults:       adults,
-    Children:     children,
-    ChildrenAges: childrenAges.length > 0 ? childrenAges : [],
-  }));
+  let PaxRooms;
+  if (roomGuests && roomGuests.length > 0) {
+    PaxRooms = roomGuests.map((rg) => {
+      if (rg.adults < 1 || rg.adults > 8) throw new Error("adults must be between 1 and 8 per room");
+      if (rg.children < 0 || rg.children > 4) throw new Error("children must be between 0 and 4 per room");
+      if (rg.children > 0 && rg.childrenAges.length !== rg.children) {
+        throw new Error(`childrenAges must have exactly ${rg.children} entr${rg.children === 1 ? "y" : "ies"}`);
+      }
+      if (rg.childrenAges.some((age) => age < 0 || age > 18)) {
+        throw new Error("each child age must be between 0 and 18");
+      }
+      return {
+        Adults: rg.adults,
+        Children: rg.children,
+        ChildrenAges: rg.childrenAges.length > 0 ? rg.childrenAges : [],
+      };
+    });
+  } else {
+    if (adults < 1 || adults > 8)   throw new Error("adults must be between 1 and 8 per room");
+    if (children < 0 || children > 4) throw new Error("children must be between 0 and 4 per room");
+    if (children > 0 && childrenAges.length !== children) {
+      throw new Error(`childrenAges must have exactly ${children} entr${children === 1 ? "y" : "ies"}`);
+    }
+    if (childrenAges.some((age) => age < 0 || age > 18)) {
+      throw new Error("each child age must be between 0 and 18");
+    }
+
+    PaxRooms = Array.from({ length: rooms }, () => ({
+      Adults:       adults,
+      Children:     children,
+      ChildrenAges: childrenAges.length > 0 ? childrenAges : [],
+    }));
+  }
 
   const traceId = (input.traceId && String(input.traceId).trim()) || randomUUID();
   const tokenId = await authenticate();
