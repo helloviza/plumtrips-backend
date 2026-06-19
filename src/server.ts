@@ -18,6 +18,7 @@ import authRoutes from "./routes/auth.js";
 import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and /logout-bridge
 import authMarket from "./routes/authMarket.js";
 import marketPanel from "./routes/market_panel/index.js";
+import inquiryRoutes from "./routes/inquiry.js";
 
 //
 
@@ -98,7 +99,7 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/v1/_probe", (_req, res) =>
   res.json({ ok: true, where: "server.ts probe" })
 );
-app.get("/favicon.ico", (_req, res) => res.status(204).end());
+app.get("", (_req, res) => res.status(204).end());
 
 // ---------- Effective OAuth redirect (for sanity check) ----------
 const effectiveGoogleRedirect = `${BACKEND_PUBLIC_URL}/api/oauth/google/callback`;
@@ -117,6 +118,7 @@ app.use("/api/v1/me", meRouter);
 app.use("/api/v1/flights", flightsRouter);
 app.use("/api/v1/hotels", hotelsRouter);
 app.use("/api/v1/payments", paymentsRouter);
+app.use("/api/v1/inquiries", inquiryRoutes);
 
 app.use("/api/v1/sso", ssoRoutes);
 

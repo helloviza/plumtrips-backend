@@ -3,17 +3,22 @@ import { Router } from "express";
 import crypto from "crypto";
 
 import {
-  searchFlights,
-  getFareRule,
-  getFareQuote,
-  getSSR,
   bookFlight,
   ticketFlight,
+  ticketLCC,
   getBookingDetails,
   getAirports,
   getAirlines,
   getCalendarPrices,
+  
 } from "../../services/tbo/flight.service.js";
+
+import { 
+  getFareRule,
+  getFareQuote,
+  getSSR,} from "../../component/flight/flightService.js";
+
+
 
 import {
   authenticate,
@@ -28,6 +33,9 @@ import {
   axiosMessage,
   withTimeout,
 } from "../../lib/http.js";
+
+import {handleSearchController} from "../../component/flight/flightService.js";
+    const { BookingModel } = await import("../../models/booking.model.js");
 
 const r = Router();
 
@@ -140,23 +148,19 @@ r.post("/tbo/_search-raw", async (req, res) => {
 /* Core Flight endpoints                                               */
 /* ------------------------------------------------------------------ */
 
+
+
+
+
+
 r.post("/tbo/search", async (req, res) => {
   console.log("[tbo/search] incoming body:", JSON.stringify(req.body, null, 2));
-  try {
-    const data = await searchFlights(req.body);
-    console.log("[tbo/search] ✅ success, TraceId:", data?.Response?.TraceId);
-    res.json(ok(data));
-  } catch (e: any) {
-    const tboData = e?.response?.data;
-    console.error("[tbo/search] ❌ ERROR:", {
-      message: e.message,
-      status: e?.response?.status,
-      tboResponse: tboData ? JSON.stringify(tboData).slice(0, 500) : "(no response data)",
-    });
-    const status = e?.response?.status || 400;
-    res.status(status).json(fail(axiosMessage(e), { tboError: tboData?.Response?.Error || null }));
-  }
+  const result = await handleSearchController(req.body);
+  const status = result.ok ? 200 : 400;
+  res.status(status).json(result);
 });
+
+
 
 r.post("/tbo/fare-rule", async (req, res) => {
   try {
@@ -166,6 +170,9 @@ r.post("/tbo/fare-rule", async (req, res) => {
     res.status(400).json(fail(axiosMessage(e)));
   }
 });
+
+
+
 
 r.post("/tbo/fare-quote", async (req, res) => {
   try {
@@ -180,10 +187,36 @@ r.post("/tbo/fare-quote", async (req, res) => {
   }
 });
 
+
+r.post("/tbo/ssr", async (req, res) => {
+  try {
+    const data = await getSSR({
+      traceId:          req.body.traceId,
+      resultIndex:      req.body.resultIndex
+    });
+    const ssrError = data?.Response?.Error;
+    if (ssrError?.ErrorCode && ssrError.ErrorCode !== 0) {
+      return res.status(502).json(
+        fail(ssrError.ErrorMessage || "SSR options could not be loaded", {
+          tboError: ssrError,
+        })
+      );
+    }
+    res.json(ok(data));
+  } catch (e: any) {
+    console.warn("[tbo/ssr] SSR fetch threw:", axiosMessage(e));
+    res.status(502).json(fail(axiosMessage(e)));
+  }
+});
+
+
+
 r.post("/tbo/book", async (req, res) => {
   try {
     console.log("[/tbo/book] Incoming request body:", JSON.stringify(req.body, null, 2));
-    const data = await bookFlight(req.body);
+    const data = req.body?.isLCC === true
+      ? await ticketLCC(req.body)
+      : await bookFlight(req.body);
     res.json(ok(data));
   } catch (e: any) {
     const errMsg = axiosMessage(e);
@@ -193,14 +226,56 @@ r.post("/tbo/book", async (req, res) => {
   }
 });
 
+
+
 r.post("/tbo/ticket", async (req, res) => {
   try {
-    const data = await ticketFlight(req.body);
+    const data = req.body?.isLCC === true
+      ? await ticketLCC(req.body)
+      : await ticketFlight(req.body);
     res.json(ok(data));
   } catch (e: any) {
     res.status(400).json(fail(axiosMessage(e)));
   }
 });
+
+
+
+r.post("/tbo/booking-save", async (req, res) => {
+  try {
+    const { bookingId, pnr, contactEmail, contactPhone, totalPaid,
+            flightItinerary, passengers, fare, segments, rawResponse } = req.body;
+
+    if (!bookingId || !pnr || !contactEmail) {
+      return res.status(400).json(fail("bookingId, pnr, and contactEmail are required"));
+    }
+
+
+
+    const booking = await BookingModel.findOneAndUpdate(
+      { bookingId },
+      { bookingId, pnr, contactEmail, contactPhone, totalPaid,
+        flightItinerary, passengers, fare, segments, rawResponse },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.json(ok({ saved: true, id: booking._id }));
+  } catch (e: any) {
+    res.status(500).json(fail(e.message || "Failed to save booking"));
+  }
+});
+
+r.get("/tbo/booking/:bookingId", async (req, res) => {
+  try {
+    const { BookingModel } = await import("../../models/booking.model.js");
+    const booking = await BookingModel.findOne({ bookingId: Number(req.params.bookingId) });
+    if (!booking) return res.status(404).json(fail("Booking not found"));
+    res.json(ok(booking));
+  } catch (e: any) {
+    res.status(500).json(fail(e.message));
+  }
+});
+
 
 r.post("/tbo/booking-details", async (req, res) => {
   try {
@@ -211,29 +286,7 @@ r.post("/tbo/booking-details", async (req, res) => {
   }
 });
 
-r.post("/tbo/ssr", async (req, res) => {
-  try {
-const data = await getSSR({
-  traceId:            req.body.traceId,
-  resultIndex:        req.body.resultIndex,
-  allResultIndexes:   req.body.allResultIndexes,   // NEW — for multi-city
-  skipFareQuote:      req.body.skipFareQuote === true,
-});
-    res.json(ok(data));
-  } catch (e: any) {
-    console.warn("[tbo/ssr] SSR fetch threw — returning empty:", axiosMessage(e));
-    res.json(ok({
-      Response: {
-        ResponseStatus: 1,
-        Error: { ErrorCode: 0, ErrorMessage: "" },
-        SeatDynamic: [],
-        MealDynamic: [],
-        Baggage: [],
-        SSRDynamic: [],
-      },
-    }));
-  }
-});
+
 
 /* ------------------------------------------------------------------ */
 /* Calendar Prices                                                     */
@@ -255,6 +308,7 @@ r.get("/calendar-prices", async (req, res) => {
     const from       = String(req.query.from       || "").toUpperCase().trim();
     const to         = String(req.query.to         || "").toUpperCase().trim();
     const cabinClass = Number(req.query.cabinClass  || 2);
+    const daysAhead  = Number(req.query.daysAhead || 62);
 
     if (!from || !to) {
       return res.status(400).json(fail("Query params 'from' and 'to' are required"));
@@ -265,7 +319,7 @@ r.get("/calendar-prices", async (req, res) => {
 
     console.log(`[calendar-prices] Fetching prices for ${from}→${to} cabinClass=${cabinClass}`);
 
-    const priceMap = await getCalendarPrices({ from, to, cabinClass });
+    const priceMap = await getCalendarPrices({ from, to, cabinClass, daysAhead });
 
     console.log(
       `[calendar-prices] ✅ Returning ${Object.keys(priceMap).length} dates for ${from}→${to}`
@@ -306,3 +360,4 @@ r.get("/tbo/airlines", (_req, res) => {
 });
 
 export default r;
+

@@ -481,6 +481,7 @@ function buildNoSeatPlaceholder(ref: any): object {
 /* ------------------------------------------------------------------ */
 
 const calendarCache = new Map<string, { ts: number; data: Record<string, number> }>();
+const calendarInFlight = new Map<string, Promise<Record<string, number>>>();
 const CACHE_TTL_MS  = 30 * 60 * 1000; // 30 minutes
 
 /* ------------------------------------------------------------------ */
@@ -815,9 +816,10 @@ export type SSRInput = {
 
 export async function getSSR(input: SSRInput & {
   skipFareQuote?: boolean;
-  allResultIndexes?: string[];   // NEW
+  allResultIndexes?: string[];
 }) {
-  const { traceId, resultIndex, skipFareQuote = false, allResultIndexes } = input;
+  const { traceId, resultIndex, skipFareQuote = false } = input;
+  // allResultIndexes is no longer used — each leg is called individually
 
   if (!traceId || resultIndex === undefined || resultIndex === null) {
     throw new Error("traceId and resultIndex are required");
@@ -830,29 +832,36 @@ export async function getSSR(input: SSRInput & {
 
   if (!skipFareQuote) {
     try {
-      // For multi-city: FareQuote needs ALL legs' ResultIndexes joined
-      const fqResultIndex = allResultIndexes && allResultIndexes.length > 1
-        ? allResultIndexes.join(",")
-        : resultIndex;
+      const fqBody = {
+        EndUserIp,
+        TokenId,
+        TraceId:     String(traceId),
+        ResultIndex: resultIndex,  // single leg only, never joined
+      };
 
-      const fqBody = { EndUserIp, TokenId, TraceId: String(traceId), ResultIndex: fqResultIndex };
+      console.log("[getSSR] FareQuote pre-call with ResultIndex:", resultIndex);
+
       const { data: fqData } = await httpFlight.post("/FareQuote", fqBody, {
         headers: { "Content-Type": "application/json", Accept: "application/json" },
       });
+
       const fqErr = fqData?.Response?.Error;
       if (fqErr && fqErr.ErrorCode && fqErr.ErrorCode !== 0) {
-        console.warn("[getSSR] FareQuote pre-call error:", fqErr.ErrorCode, fqErr.ErrorMessage, "— using original ResultIndex");
+        console.warn("[getSSR] FareQuote error:", fqErr.ErrorCode, fqErr.ErrorMessage, "— using original ResultIndex");
       } else {
-      const fqResult = fqData?.Response?.Results;
-      const resolvedIndex = Array.isArray(fqResult)
-        ? fqResult[0]?.ResultIndex     // multi-city
-        : fqResult?.ResultIndex;        // one-way / round-trip
-      if (resolvedIndex) ssrResultIndex = resolvedIndex;
-    }} catch (fqErr: any) {
+        const fqResult = fqData?.Response?.Results;
+        // Results can be array (multi-city) or object (one-way/round-trip)
+        const resolved = Array.isArray(fqResult)
+          ? fqResult[0]?.ResultIndex
+          : fqResult?.ResultIndex;
+        if (resolved) {
+          ssrResultIndex = resolved;
+          console.log("[getSSR] FareQuote resolved ResultIndex:", ssrResultIndex);
+        }
+      }
+    } catch (fqErr: any) {
       console.warn("[getSSR] FareQuote pre-call failed — using original ResultIndex:", fqErr.message);
     }
-  } else {
-    console.log("[getSSR] Skipping FareQuote pre-call (multi-city leg), using ResultIndex directly:", resultIndex);
   }
 
   const body = {
@@ -875,19 +884,23 @@ export async function getSSR(input: SSRInput & {
     if (msg.toLowerCase().includes("session") || msg.toLowerCase().includes("expired")) {
       invalidateToken();
     }
-    return {
-      Response: {
-        ResponseStatus: 1,
-        Error: { ErrorCode: 0, ErrorMessage: "" },
-        SeatDynamic: [],
-        MealDynamic: [],
-        Baggage:     [],
-        SSRDynamic:  [],
-      },
-    };
+    return emptySSRResponse();
   }
 
   return data;
+}
+
+export function emptySSRResponse() {
+  return {
+    Response: {
+      ResponseStatus: 1,
+      Error: { ErrorCode: 0, ErrorMessage: "" },
+      SeatDynamic: [],
+      MealDynamic: [],
+      Baggage:     [],
+      SSRDynamic:  [],
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1167,6 +1180,14 @@ export async function ticketLCC(params: {
       PassportNo?: string;
     };
   }>;
+  contact?: { Email?: string; Mobile?: string };
+  gst?: {
+    GSTCompanyAddress?: string;
+    GSTCompanyContactNumber?: string;
+    GSTCompanyName?: string;
+    GSTNumber?: string;
+    GSTCompanyEmail?: string;
+  };
   isPriceChangeAccepted?: boolean;
   isNDC?: boolean;
   isInternational?: boolean;
@@ -1188,6 +1209,8 @@ export async function ticketLCC(params: {
   const {
     traceId, resultIndex,
     passengers,
+    contact,
+    gst,
     isPriceChangeAccepted = false,
     isNDC = false,
     airlineCode,
@@ -1204,9 +1227,32 @@ export async function ticketLCC(params: {
   if (!Array.isArray(passengers) || passengers.length < 1) {
     throw new Error("at least one passenger is required");
   }
+  const fallbackContact = {
+    Email: contact?.Email || passengers.find((p: any) => p?.Email)?.Email || "",
+    Mobile: contact?.Mobile || passengers.find((p: any) => p?.ContactNo)?.ContactNo || "",
+  };
+
+  if (!fallbackContact.Email || !fallbackContact.Mobile) {
+    throw new Error("contact Email and Mobile are required");
+  }
   if (IsGSTMandatory === true && !GSTCompanyInfo) {
     throw new Error("GST company details are mandatory for this fare. Please provide your company GSTIN.");
   }
+
+  const fq    = await getFareQuote({ traceId, resultIndex });
+  const fqRes = fq?.Response?.Results;
+  if (!fqRes) throw new Error("FareQuote missing Results");
+
+  const fareByPaxType = new Map<number, any>();
+  for (const bd of fqRes.FareBreakdown || []) {
+    const passengerType = bd?.PassengerType ?? bd?.PaxType;
+    if (typeof passengerType === "number") {
+      fareByPaxType.set(passengerType, bd);
+    }
+  }
+
+  const overallFare     = fqRes.Fare || {};
+  const defaultCurrency = overallFare.Currency || "INR";
 
   const TokenId   = await authenticate();
   const EndUserIp = getEndUserIp();
@@ -1230,6 +1276,8 @@ export async function ticketLCC(params: {
     const firstName = sanitizeName(p.FirstName);
     const lastName  = sanitizeName(p.LastName);
     const paxType   = Number(p.PaxType) || 1;
+    const bd = fareByPaxType.get(paxType) || overallFare;
+    const passengerFare = p.Fare || {};
 
     const pax: Record<string, unknown> = {
       Title:       sanitizeTitle(p.Title),
@@ -1244,8 +1292,8 @@ export async function ticketLCC(params: {
                    })(),
       PassportNo:      p.PassportNo || "",
       PassportExpiry:  sanitizePassportDate(p.PassportExpiry),
-      ContactNo:       sanitizeContactNo(p.ContactNo, p.IsLeadPax),
-      Email:           ndcMode ? (p.Email || lccLeadEmail) : (p.Email || ""),
+      ContactNo:       sanitizeContactNo(p.ContactNo || fallbackContact.Mobile, p.IsLeadPax),
+      Email:           ndcMode ? (p.Email || lccLeadEmail || fallbackContact.Email) : (p.Email || fallbackContact.Email),
       IsLeadPax:       p.IsLeadPax ?? false,
       CountryCode:     p.CountryCode || "IN",
       CountryName:     p.CountryName || "India",
@@ -1255,32 +1303,32 @@ export async function ticketLCC(params: {
       AddressLine2:    p.AddressLine2 || "",
       FFAirlineCode:   p.FFAirlineCode || null,
       FFNumber:        p.FFNumber || "",
-      GSTCompanyAddress:       p.GSTCompanyAddress       || "",
-      GSTCompanyContactNumber: p.GSTCompanyContactNumber || "",
-      GSTCompanyName:          p.GSTCompanyName          || "",
-      GSTNumber:               p.GSTNumber               || "",
-      GSTCompanyEmail:         p.GSTCompanyEmail         || "",
+      GSTCompanyAddress:       gst?.GSTCompanyAddress       || p.GSTCompanyAddress       || "",
+      GSTCompanyContactNumber: gst?.GSTCompanyContactNumber || p.GSTCompanyContactNumber || "",
+      GSTCompanyName:          gst?.GSTCompanyName          || p.GSTCompanyName          || "",
+      GSTNumber:               gst?.GSTNumber               || p.GSTNumber               || "",
+      GSTCompanyEmail:         gst?.GSTCompanyEmail         || p.GSTCompanyEmail         || "",
       Fare: {
-        Currency:             p.Fare?.Currency || "INR",
-        BaseFare:             Number(p.Fare?.BaseFare) || 0,
-        Tax:                  Number(p.Fare?.Tax) || 0,
-        YQTax:                Number(p.Fare?.YQTax) || 0,
-        AdditionalTxnFeeOfrd: Number(p.Fare?.AdditionalTxnFeeOfrd) || 0,
-        AdditionalTxnFeePub:  Number(p.Fare?.AdditionalTxnFeePub) || 0,
-        PGCharge:             0,
-        OtherCharges:         Number(p.Fare?.OtherCharges) || 0,
-        Discount:             Number(p.Fare?.Discount) || 0,
-        PublishedFare:        Number(p.Fare?.PublishedFare) || 0,
-        OfferedFare:          Number(p.Fare?.OfferedFare) || 0,
-        TdsOnCommission:      Number(p.Fare?.TdsOnCommission) || 0,
-        TdsOnPLB:             Number(p.Fare?.TdsOnPLB) || 0,
-        TdsOnIncentive:       Number(p.Fare?.TdsOnIncentive) || 0,
-        ServiceFee:           Number(p.Fare?.ServiceFee) || 0,
-        TransactionFee:       Number(p.Fare?.TransactionFee) || 0,
-        AirTransFee:          Number(p.Fare?.AirTransFee) || 0,
-        CommissionEarned:     Number(p.Fare?.CommissionEarned) || 0,
-        PLBEarned:            Number(p.Fare?.PLBEarned) || 0,
-        IncentiveEarned:      Number(p.Fare?.IncentiveEarned) || 0,
+        Currency:             passengerFare.Currency || bd.Currency || defaultCurrency,
+        BaseFare:             Number(passengerFare.BaseFare ?? bd.BaseFare ?? overallFare.BaseFare) || 0,
+        Tax:                  Number(passengerFare.Tax ?? bd.Tax ?? overallFare.Tax) || 0,
+        YQTax:                Number(passengerFare.YQTax ?? bd.YQTax ?? overallFare.YQTax) || 0,
+        AdditionalTxnFeeOfrd: Number(passengerFare.AdditionalTxnFeeOfrd ?? overallFare.AdditionalTxnFeeOfrd) || 0,
+        AdditionalTxnFeePub:  Number(passengerFare.AdditionalTxnFeePub ?? overallFare.AdditionalTxnFeePub) || 0,
+        PGCharge:             Number(passengerFare.PGCharge ?? overallFare.PGCharge) || 0,
+        OtherCharges:         Number(passengerFare.OtherCharges ?? overallFare.OtherCharges) || 0,
+        Discount:             Number(passengerFare.Discount ?? overallFare.Discount) || 0,
+        PublishedFare:        Number(passengerFare.PublishedFare ?? overallFare.PublishedFare) || 0,
+        OfferedFare:          Number(passengerFare.OfferedFare ?? overallFare.OfferedFare) || 0,
+        TdsOnCommission:      Number(passengerFare.TdsOnCommission ?? overallFare.TdsOnCommission) || 0,
+        TdsOnPLB:             Number(passengerFare.TdsOnPLB ?? overallFare.TdsOnPLB) || 0,
+        TdsOnIncentive:       Number(passengerFare.TdsOnIncentive ?? overallFare.TdsOnIncentive) || 0,
+        ServiceFee:           Number(passengerFare.ServiceFee ?? overallFare.ServiceFee) || 0,
+        TransactionFee:       Number(passengerFare.TransactionFee ?? overallFare.TransactionFee) || 0,
+        AirTransFee:          Number(passengerFare.AirTransFee ?? overallFare.AirTransFee) || 0,
+        CommissionEarned:     Number(passengerFare.CommissionEarned ?? overallFare.CommissionEarned) || 0,
+        PLBEarned:            Number(passengerFare.PLBEarned ?? overallFare.PLBEarned) || 0,
+        IncentiveEarned:      Number(passengerFare.IncentiveEarned ?? overallFare.IncentiveEarned) || 0,
       },
     };
 
@@ -1307,8 +1355,10 @@ export async function ticketLCC(params: {
     }
 
     // ── Meals ──────────────────────────────────────────────────────
-    const MEAL_PLACEHOLDERS = ["", "nomeal", "no_meal", "none", "no meal preference"];
+    const MEAL_PLACEHOLDERS = ["nomeal", "no_meal", "none", "no meal", "no meal preference","NoMeal"];
+    const BAGGAGE_PLACEHOLDERS = ["nobaggage", "no_baggage", "none", "no baggage", "included only","NoBaggage"];
     const rawMeals = Array.isArray(p.MealDynamic) ? p.MealDynamic : [];
+    const rawBaggage = Array.isArray(p.Baggage) ? p.Baggage : [];
     const bookedFlightNumbers = params.segments
       ? (params.segments as any[][]).flat().map((s: any) => String(s.FlightNumber || "")).filter(Boolean)
       : [];
@@ -1319,17 +1369,45 @@ export async function ticketLCC(params: {
 
     const validMeals = sanitizeMealDynamic(rawMeals).filter((m: any) => {
       const normalizedMealNo = normalizeFlightNumber(m.FlightNumber);
+      const code = String(m.Code || "").trim().toLowerCase();
       return (
-        m.Code && !MEAL_PLACEHOLDERS.includes(m.Code.toLowerCase()) &&
+        code &&
         m.AirlineCode && m.FlightNumber &&
         (bookedFlightNumberSet.size === 0 ||
           bookedFlightNumberSet.has(String(m.FlightNumber)) ||
           (normalizedMealNo && bookedFlightNumberSet.has(normalizedMealNo)))
       );
+    }).map((m: any) => {
+      const code = String(m.Code || "").trim().toLowerCase();
+      if (MEAL_PLACEHOLDERS.includes(code)) {
+        return { ...m, Code: "NoMeal", Quantity: 0, Price: 0 };
+      }
+      return m;
     });
-    const mealRef = rawMeals[0];
-    // Only add meals if at least one valid meal exists; otherwise leave empty (meals are optional)
-    pax.MealDynamic = validMeals.length > 0 ? validMeals : [];
+    if (validMeals.length > 0) {
+      pax.MealDynamic = validMeals;
+    }
+
+    const validBaggage = sanitizeBaggage(rawBaggage).filter((b: any) => {
+      const normalizedBagFlightNo = normalizeFlightNumber(b.FlightNumber);
+      const code = String(b.Code || "").trim().toLowerCase();
+      return (
+        code &&
+        b.AirlineCode && b.FlightNumber &&
+        (bookedFlightNumberSet.size === 0 ||
+          bookedFlightNumberSet.has(String(b.FlightNumber)) ||
+          (normalizedBagFlightNo && bookedFlightNumberSet.has(normalizedBagFlightNo)))
+      );
+    }).map((b: any) => {
+      const code = String(b.Code || "").trim().toLowerCase();
+      if (BAGGAGE_PLACEHOLDERS.includes(code)) {
+        return { ...b, Code: "NoBaggage", Weight: 0, Price: 0 };
+      }
+      return b;
+    });
+    if (validBaggage.length > 0) {
+      pax.Baggage = validBaggage;
+    }
 
     // ── Seats ──────────────────────────────────────────────────────
     if (Array.isArray(p.SeatDynamic) && p.SeatDynamic.length > 0) {
@@ -1461,11 +1539,19 @@ export async function ticketLCC(params: {
     }));
   }
 
+  if (respError?.ErrorCode && respError.ErrorCode !== 0) {
+    throw new Error(respError.ErrorMessage || "LCC ticket failed");
+  }
+
   // Auto-retry with IsPriceChangeAccepted if TBO signals price changed
   if (data?.Response?.IsPriceChanged === true || data?.Response?.Response?.IsPriceChanged === true) {
     const { data: retryData } = await httpFlight.post("/Ticket", { ...payload, IsPriceChangeAccepted: true }, {
       headers: { "Content-Type": "application/json", Accept: "application/json" },
     });
+    const retryError = retryData?.Response?.Error ?? retryData?.Response?.Response?.Error;
+    if (retryError?.ErrorCode && retryError.ErrorCode !== 0) {
+      throw new Error(retryError.ErrorMessage || "LCC ticket failed");
+    }
     return retryData;
   }
 
@@ -1768,7 +1854,7 @@ export type CalendarPricesInput = {
   to: string;
   cabinClass?: number;
   daysAhead?: number;
-  batchSize?: number;
+  concurrency?: number;
 };
 
 export async function getCalendarPrices(
@@ -1778,17 +1864,55 @@ export async function getCalendarPrices(
     from,
     to,
     cabinClass = 2,
-    daysAhead  = 60,
-    batchSize  = 7,
+    daysAhead  = 62,
+    concurrency = 12,
   } = input;
 
-  const cacheKey = `${from}-${to}-${cabinClass}`;
+  const safeDaysAhead = Math.min(Math.max(Number(daysAhead) || 62, 1), 90);
+  const safeConcurrency = Math.min(Math.max(Number(concurrency) || 12, 1), 16);
+  const cacheKey = `${from}-${to}-${cabinClass}-${safeDaysAhead}`;
   const cached   = calendarCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
     console.log(`[getCalendarPrices] cache hit for ${cacheKey} (${Object.keys(cached.data).length} dates)`);
     return cached.data;
   }
 
+  const inFlight = calendarInFlight.get(cacheKey);
+  if (inFlight) {
+    console.log(`[getCalendarPrices] joining in-flight request for ${cacheKey}`);
+    return inFlight;
+  }
+
+  const request = fetchCalendarPrices({
+    from,
+    to,
+    cabinClass,
+    daysAhead: safeDaysAhead,
+    concurrency: safeConcurrency,
+    cacheKey,
+  }).finally(() => {
+    calendarInFlight.delete(cacheKey);
+  });
+
+  calendarInFlight.set(cacheKey, request);
+  return request;
+}
+
+async function fetchCalendarPrices({
+  from,
+  to,
+  cabinClass,
+  daysAhead,
+  concurrency,
+  cacheKey,
+}: {
+  from: string;
+  to: string;
+  cabinClass: number;
+  daysAhead: number;
+  concurrency: number;
+  cacheKey: string;
+}): Promise<Record<string, number>> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -1810,11 +1934,14 @@ export async function getCalendarPrices(
   const calToken = await authenticate();
   const calIp    = getEndUserIp();
 
-  for (let i = 0; i < dates.length; i += batchSize) {
-    const batch = dates.slice(i, i + batchSize);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, dates.length);
 
-    await Promise.allSettled(
-      batch.map(async (date) => {
+  await Promise.allSettled(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < dates.length) {
+        const date = dates[nextIndex++];
+
         try {
           const { data } = await httpFlight.post(
             "/Search",
@@ -1861,13 +1988,9 @@ export async function getCalendarPrices(
         } catch (err: any) {
           console.warn(`[getCalendarPrices] skipped ${date} (${from}→${to}):`, err.message);
         }
-      })
-    );
-
-    if (i + batchSize < dates.length) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-  }
+      }
+    })
+  );
 
   console.log(
     `[getCalendarPrices] ${from}→${to}: got prices for ${Object.keys(priceMap).length}/${daysAhead} dates`
