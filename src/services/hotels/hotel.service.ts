@@ -19,7 +19,7 @@
 
 import type { AxiosInstance } from "axios";
 import { randomUUID } from "node:crypto";
-import { httpHotel, httpHotelStatic, httpHotelBook } from "../../lib/http.js";
+import { httpHotel, httpHotelStatic, httpHotelBook, httpHotelCancel } from "../../lib/http.js";
 import { getStaticAuthHeader, getBookingAuthHeader } from "../tbo/hotel.auth.service.js";
 import { authenticate, resolveBookingEndUserIp } from "../tbo/auth.service.js";
 
@@ -237,7 +237,8 @@ function dedupeBookStrategies(
 async function tboPostWithClient<T = any>(
   client: AxiosInstance,
   path: string,
-  body: Record<string, any>
+  body: Record<string, any>,
+  options?: { timeout?: number }
 ): Promise<T> {
   let authHeader: string;
   try {
@@ -254,6 +255,7 @@ async function tboPostWithClient<T = any>(
         Accept:         "application/json",
         Authorization:  authHeader,
       },
+      ...(options?.timeout != null ? { timeout: options.timeout } : {}),
     });
     responseData = data;
   } catch (err: any) {
@@ -267,7 +269,7 @@ async function tboPostWithClient<T = any>(
     }
     if (status === 404) {
       throw new Error(
-        `TBO hotel HTTP 404 on ${path}. Check the base URL for this endpoint — Book, GetBookingDetails, and Cancel use TBO_HOTEL_BOOK_BASE_URL (HotelBE/hotelservice.svc/rest), not the affiliate HotelAPI.`
+        `TBO hotel endpoint not found: ${path}. This operation may not be available for this account type. Contact TBO support.`
       );
     }
     if (!status || status >= 500) {
@@ -285,19 +287,45 @@ async function tboPostWithClient<T = any>(
     throw new Error(msg);
   }
 
-  const errFromResponse  = responseData?.Response?.Error;
+  const logTag = client === httpHotelBook ? "[hotel-book]" : "[hotel]";
+
+  // ── Guard: TBO sometimes returns a plain string on hard failures ──────────
+  // e.g. "Invalid Resource Requested!" instead of a JSON object.
+  // Treat any non-object response as a fatal TBO error.
+  if (typeof responseData === "string" || typeof responseData !== "object" || responseData === null) {
+    const msg = typeof responseData === "string" ? responseData.trim() : "TBO returned an unexpected non-object response";
+    console.error(`${logTag} ${path} TBO returned non-object response:`, responseData);
+    throw new Error(`TBO rejected the request: ${msg}`);
+  }
+
+  // ── Structured TBO error envelopes ───────────────────────────────────────
+  const errFromResponse   = responseData?.Response?.Error;
   const errFromBookResult = responseData?.BookResult?.Error;
   const tboErr = errFromBookResult || errFromResponse;
 
   if (tboErr && tboErr.ErrorCode && tboErr.ErrorCode !== 0) {
     const msg = tboErr.ErrorMessage || "TBO error";
-    const logTag = client === httpHotelBook ? "[hotel-book]" : "[hotel]";
     console.error(`${logTag} ${path} TBO error`, {
       code: tboErr.ErrorCode,
       msg,
       envelope: errFromBookResult ? "BookResult" : "Response",
     });
     throw Object.assign(new Error(msg), { tboCode: tboErr.ErrorCode });
+  }
+
+  // ── Top-level Status error (some TBO endpoints use this pattern) ──────────
+  // TBO uses Code: 1 for success on booking endpoints, but Code: 200 for search.
+  // Only treat it as an error when Code is explicitly a known failure code.
+  const topStatus = responseData?.Status;
+  if (topStatus && typeof topStatus === "object") {
+    const code = Number(topStatus.Code);
+    // Code 0, 1, 200 are all success variants across different TBO endpoints
+    const isFailure = code !== 0 && code !== 1 && code !== 200;
+    if (isFailure) {
+      const msg = topStatus.Description || topStatus.Message || `TBO status code ${topStatus.Code}`;
+      console.error(`${logTag} ${path} TBO Status error`, topStatus);
+      throw new Error(`TBO error: ${msg}`);
+    }
   }
 
   return responseData as T;
@@ -541,7 +569,9 @@ async function fetchCitiesForCountry(countryCode: string): Promise<TboCityRow[]>
   const result = await tboStaticPost("/CityList", { CountryCode: cc });
   const cities = extractCityList(result).map((c) => ({
     ...c,
-    CountryCode: c.CountryCode || cc,
+    // Always enforce the requested country code — TBO occasionally returns rows
+    // with a blank or different CountryCode in the CityList payload
+    CountryCode: c.CountryCode && /^[A-Z]{2}$/.test(c.CountryCode) ? c.CountryCode : cc,
   }));
   cityListByCountryCache.set(cc, { at: now, cities });
   return cities;
@@ -550,6 +580,19 @@ async function fetchCitiesForCountry(countryCode: string): Promise<TboCityRow[]>
 function filterCitiesByQuery(cities: TboCityRow[], query: string): TboCityRow[] {
   const q = query.split(',')[0].trim().toLowerCase();
   if (!q) return [];
+  
+  // More precise matching - prioritize exact word matches
+  const exactMatches = cities.filter((c) => {
+    const cityName = c.Name.toLowerCase();
+    // Split by spaces and check for exact word match
+    const words = cityName.split(/\s+/);
+    return words.some(word => word === q || word.startsWith(q));
+  });
+  
+  // If we have exact matches, prefer those
+  if (exactMatches.length > 0) return exactMatches;
+  
+  // Otherwise fall back to substring matching
   return cities.filter((c) => c.Name.toLowerCase().includes(q));
 }
 
@@ -628,11 +671,13 @@ export async function getCityList(cityName: string, countryCode?: string) {
   const query = cityName.trim();
   const cc = countryCode?.trim().toUpperCase();
 
+  // If a specific country is requested, ONLY search that country
   if (cc && cc !== "ALL") {
     try {
       const cities = await fetchCitiesForCountry(cc);
       const filtered = filterCitiesByQuery(cities, query);
       if (filtered.length) {
+        console.log(`[hotel-static] Found ${filtered.length} cities in ${cc} matching "${query}"`);
         return {
           Status: { Code: 1, Description: "Success" },
           CityList: rankCityMatches(filtered, query),
@@ -643,7 +688,10 @@ export async function getCityList(cityName: string, countryCode?: string) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[hotel-static] CityList failed for ${cc}:`, msg);
     }
+    
+    // Fallback to local data for this specific country only
     const fallback = fallbackCitySearch(query).filter((c) => c.CountryCode === cc);
+    console.log(`[hotel-static] Using fallback: ${fallback.length} cities in ${cc} matching "${query}"`);
     return {
       Status: { Code: 1, Description: "Success" },
       CityList: fallback,
@@ -651,6 +699,7 @@ export async function getCityList(cityName: string, countryCode?: string) {
     };
   }
 
+  // Global search (ALL or no country specified)
   try {
     const allCodes = await getCachedCountryCodes();
     const ordered = [
@@ -663,6 +712,7 @@ export async function getCityList(cityName: string, countryCode?: string) {
       GLOBAL_CITY_RESULT_LIMIT
     );
     if (globalMatches.length) {
+      console.log(`[hotel-static] Global search: found ${globalMatches.length} cities matching "${query}"`);
       return {
         Status: { Code: 1, Description: "Success" },
         CityList: globalMatches,
@@ -674,9 +724,11 @@ export async function getCityList(cityName: string, countryCode?: string) {
     console.warn("[hotel-static] Global city search failed:", msg);
   }
 
+  const fallbackResults = fallbackCitySearch(query);
+  console.log(`[hotel-static] Using global fallback: ${fallbackResults.length} cities matching "${query}"`);
   return {
     Status: { Code: 1, Description: "Success" },
-    CityList: fallbackCitySearch(query),
+    CityList: fallbackResults,
     source: "fallback",
   };
 }
@@ -684,8 +736,21 @@ export async function getCityList(cityName: string, countryCode?: string) {
 /** POST /TBOHotelCodeList — { CityCode } */
 export async function getHotelCodeListByCity(cityCode: string) {
   let finalCode = cityCode;
-  if (finalCode.includes(":")) finalCode = finalCode.split(":")[1];
-  return tboStaticPost("/TBOHotelCodeList", { CityCode: finalCode });
+  // Extract just the numeric city code, discarding country prefix if present
+  if (finalCode.includes(":")) {
+    finalCode = finalCode.split(":")[1];
+  }
+  
+  console.log(`[hotel-static] Fetching hotel codes for city: ${cityCode} (resolved to: ${finalCode})`);
+  
+  const result = await tboStaticPost("/TBOHotelCodeList", { CityCode: finalCode });
+  
+  // Log the response to help debug mismatches
+  const hotelCount = Array.isArray(result?.HotelCodes) ? result.HotelCodes.length : 
+                     Array.isArray((result as any)?.Hotels) ? (result as any).Hotels.length : 0;
+  console.log(`[hotel-static] Received ${hotelCount} hotel codes for city ${finalCode}`);
+  
+  return result;
 }
 
 /** GET /HotelCodeList — all hotels (large) */
@@ -822,7 +887,7 @@ export async function searchHotels(input: HotelSearchInput) {
         // Retry logic: up to 3 attempts per chunk
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
-            raw = await tboPost("/Search", {
+            const searchPayload = {
               CheckIn:            toTboDate(checkIn),
               CheckOut:           toTboDate(checkOut),
               HotelCodes:         chunkCodes,
@@ -841,8 +906,11 @@ export async function searchHotels(input: HotelSearchInput) {
               },
               TokenId:  tokenId,
               TraceId:  chunkTraceId,
-            });
-            break; // Success, break out of retry loop
+            };
+
+            raw = await tboPost("/Search", searchPayload);
+            
+            break;
           } catch (err) {
             lastErr = err;
             if (attempt === 3) throw err;
@@ -916,14 +984,25 @@ export async function preBookHotel(input: {
 
   const tokenId = input.tokenId?.trim() || (await authenticate());
 
-  const paymentMode = String(process.env.TBO_HOTEL_PREBOOK_PAYMENT_MODE ?? "Limit").trim() || "Limit";
-
-  return tboPost("/PreBook", {
+  // PreBook is a read-only price/policy check — only BookingCode, TokenId, TraceId.
+  // Do NOT include IsVoucherBooking, HotelRoomsDetails, GuestNationality or any booking
+  // intent fields — they cause TBO to treat this as an actual booking and check balance.
+  const preBookPayload = {
     BookingCode: input.bookingCode,
     TokenId:     tokenId,
     TraceId:     traceId,
-    PaymentMode: paymentMode,
-  });
+  };
+
+  console.log("[hotel-prebook] Sending to TBO:", JSON.stringify({
+    ...preBookPayload,
+    TokenId: `${String(tokenId).slice(0, 8)}…`,
+  }, null, 2));
+
+  // Use a shorter timeout for prebook (30s) — it's a price-check, not a booking
+  const result = await tboPostWithClient(httpHotel, "/PreBook", preBookPayload, { timeout: 30_000 });
+  console.log("[hotel-prebook] TBO RAW RESPONSE:", JSON.stringify(result, null, 2));
+  return result;
+
 }
 
 /* ------------------------------------------------------------------ */
@@ -958,6 +1037,8 @@ export type DepartureTransport = {
 
 export type BookInput = {
   bookingCode:              string;
+  /** Multi-room: one BookingCode per room. Fallback to [bookingCode] for single room. */
+  bookingCodes?:            string[];
   guestNationality:         string;
   /** Same traceId as Search / PreBook for this booking */
   traceId:                  string;
@@ -983,11 +1064,13 @@ export type BookInput = {
   isPackageDetailsMandatory?: boolean;
   arrivalTransport?:        ArrivalTransport;
   departureTransport?:      DepartureTransport;
+  /** Fallback NetAmount from frontend priceDetails — used if PreBook fails with insufficient balance */
+  netAmountFallback?:       number;
 };
 
 export async function bookHotel(input: BookInput) {
   const {
-    bookingCode, guestNationality, traceId: flowTraceId,
+    bookingCode, bookingCodes: inputBookingCodes, guestNationality, traceId: flowTraceId,
     tokenId: inputTokenId,
     endUserIp,
     isVoucherBooking = true,
@@ -1000,6 +1083,14 @@ export async function bookHotel(input: BookInput) {
 
   const traceId = String(flowTraceId || "").trim();
   if (!traceId) throw new Error("traceId is required (same value as search and prebook for this booking)");
+
+  // Resolve booking codes — multi-room sends bookingCodes[], single-room sends bookingCode
+  const resolvedBookingCodes: string[] =
+    Array.isArray(inputBookingCodes) && inputBookingCodes.length > 0
+      ? inputBookingCodes.map(c => String(c).trim()).filter(Boolean)
+      : [String(bookingCode).trim()];
+
+  if (resolvedBookingCodes.length === 0) throw new Error("At least one bookingCode is required");
 
   const tokenId = inputTokenId?.trim() || (await authenticate());
 
@@ -1014,11 +1105,12 @@ export async function bookHotel(input: BookInput) {
     throw new Error("Invalid contact mobile number");
   }
 
-  // ── Occupancy → HotelRoomsDetails (TBO: one array entry per room from Search PaxRooms) ──
-  const roomsN =
-    input.rooms != null && String(input.rooms).trim() !== ""
-      ? Number(input.rooms)
-      : 1;
+  // ── Occupancy → HotelRoomsDetails ─────────────────────────────────────────
+  // roomsN is derived from bookingCodes count (most reliable) or explicit rooms field
+  const roomsN = resolvedBookingCodes.length > 1
+    ? resolvedBookingCodes.length
+    : (input.rooms != null && String(input.rooms).trim() !== "" ? Number(input.rooms) : 1);
+
   if (!Number.isInteger(roomsN) || roomsN < 1 || roomsN > 9) {
     throw new Error("rooms must be an integer between 1 and 9 (same as hotel search)");
   }
@@ -1043,19 +1135,18 @@ export async function bookHotel(input: BookInput) {
     throw new Error("children must be an integer between 0 and 4 per room (same as hotel search)");
   }
 
-  const paxPerRoom   = adultsPerRoom + childrenPerRoom;
-  const expectedTotal = roomsN * paxPerRoom;
-
+  const paxPerRoom = adultsPerRoom + childrenPerRoom;
   if (paxPerRoom < 1) throw new Error("Each room needs at least one guest (adults + children per room)");
 
-  if (guests.length !== expectedTotal) {
+  // ── Guest count validation ──────────────────────────────────────────────────
+  // Frontend sends per-room occupancy once (adults + children), NOT multiplied by rooms.
+  // e.g. 2 rooms × 2 adults × 1 child → 3 guests sent (not 6).
+  const expectedAdults   = adultsPerRoom;
+  const expectedChildren = childrenPerRoom;
+
+  if (inferredAdults !== expectedAdults || inferredChildren !== expectedChildren) {
     throw new Error(
-      `This booking needs ${expectedTotal} guest(s) in the guests array (rooms=${roomsN} × (${adultsPerRoom} adults + ${childrenPerRoom} children) per room). You sent ${guests.length}. Use the same occupancy as hotel search — one guest object per traveller.`
-    );
-  }
-  if (inferredAdults !== roomsN * adultsPerRoom || inferredChildren !== roomsN * childrenPerRoom) {
-    throw new Error(
-      `Guest paxType counts must match search: need ${roomsN * adultsPerRoom} adult(s) (paxType 1) and ${roomsN * childrenPerRoom} child(ren) (paxType 2); got ${inferredAdults} adult(s) and ${inferredChildren} child(ren).`
+      `Guest paxType counts must match search: need ${expectedAdults} adult(s) (paxType 1) and ${expectedChildren} child(ren) (paxType 2); got ${inferredAdults} adult(s) and ${inferredChildren} child(ren).`
     );
   }
 
@@ -1085,21 +1176,77 @@ export async function bookHotel(input: BookInput) {
   });
 
   let preBookRaw: any;
-  const preBookBody: Record<string, unknown> = {
-    BookingCode: bookingCode,
-    TokenId:     tokenId,
-    TraceId:     traceId,
-  };
-  const paymentMode = String(process.env.TBO_HOTEL_PREBOOK_PAYMENT_MODE ?? "Limit").trim() || "Limit";
-  preBookBody.PaymentMode = paymentMode;
+  // For multi-room, PreBook each BookingCode separately and merge the rooms.
+  // TBO PreBook is per-BookingCode — sending only one code returns only one room's fare.
+  if (resolvedBookingCodes.length > 1) {
+    const allRooms: unknown[] = [];
+    let mergedRoot: Record<string, unknown> = {};
 
-  try {
-    preBookRaw = await tboPost("/PreBook", preBookBody as Record<string, any>);
-  } catch (err: any) {
-    throw Object.assign(
-      new Error(`PreBook failed before Book: ${err.message}`),
-      { code: err.code }
-    );
+    await Promise.all(resolvedBookingCodes.map(async (code) => {
+      try {
+        const pb = await tboPost("/PreBook", { BookingCode: code, TokenId: tokenId, TraceId: traceId, IsVoucherBooking: false });
+        const root = unwrapTboHotelPayload(pb) ?? (pb as Record<string, unknown>);
+        const hotels = coerceHotelResultArray(root.HotelResult ?? root.hotelResult);
+        for (const hr of hotels) {
+          const roomsRaw = (hr as Record<string, unknown>).Rooms ?? (hr as Record<string, unknown>).rooms;
+          if (Array.isArray(roomsRaw)) allRooms.push(...roomsRaw);
+        }
+        if (!mergedRoot.ValidationInfo) mergedRoot = { ...root };
+      } catch (e: any) {
+        const msg: string = e?.message ?? "";
+        if (
+          (msg.toLowerCase().includes("insufficient balance") || msg.toLowerCase().includes("insufficient fund")) &&
+          input.netAmountFallback != null && Number.isFinite(input.netAmountFallback)
+        ) {
+          // handled below — fall through
+        } else {
+          throw Object.assign(new Error(`PreBook failed for code ${code}: ${msg}`), { code: e.code });
+        }
+      }
+    }));
+
+    if (allRooms.length > 0) {
+      // Reconstruct a synthetic preBookRaw with all rooms merged under one HotelResult
+      preBookRaw = {
+        ...mergedRoot,
+        HotelResult: [{ BookingCode: resolvedBookingCodes[0], Rooms: allRooms }],
+      };
+    } else if (input.netAmountFallback != null && Number.isFinite(input.netAmountFallback)) {
+      console.warn(`[hotel-book] All PreBooks returned Insufficient Balance — using netAmountFallback=${input.netAmountFallback}`);
+      preBookRaw = {
+        HotelResult: [{
+          BookingCode: resolvedBookingCodes[0],
+          Rooms: resolvedBookingCodes.map(code => ({ BookingCode: code, TotalFare: input.netAmountFallback! / resolvedBookingCodes.length, NetAmount: input.netAmountFallback! / resolvedBookingCodes.length })),
+        }],
+      };
+    } else {
+      throw new Error("PreBook failed for all rooms — no pricing data available");
+    }
+  } else {
+    // Single room — original flow
+    const preBookBody: Record<string, unknown> = {
+      BookingCode:      bookingCode,
+      TokenId:          tokenId,
+      TraceId:          traceId,
+      IsVoucherBooking: false,
+    };
+
+    try {
+      preBookRaw = await tboPost("/PreBook", preBookBody as Record<string, any>);
+    } catch (err: any) {
+      const msg: string = err?.message ?? "";
+      if (
+        (msg.toLowerCase().includes("insufficient balance") || msg.toLowerCase().includes("insufficient fund")) &&
+        input.netAmountFallback != null && Number.isFinite(input.netAmountFallback)
+      ) {
+        console.warn(`[hotel-book] PreBook returned Insufficient Balance — using netAmountFallback=${input.netAmountFallback} to proceed with /Book`);
+        preBookRaw = {
+          HotelResult: [{ BookingCode: bookingCode, Rooms: [{ BookingCode: bookingCode, TotalFare: input.netAmountFallback, NetAmount: input.netAmountFallback }] }],
+        };
+      } else {
+        throw Object.assign(new Error(`PreBook failed before Book: ${msg}`), { code: err.code });
+      }
+    }
   }
 
   // TBO PreBook response shape (per apidoc.tektravels.com/hotelnew/HotelPreBook_json.aspx):
@@ -1123,13 +1270,14 @@ export async function bookHotel(input: BookInput) {
     );
   }
 
-  // Use the BookingCode from PreBook room if TBO updated it
-  const finalBookingCode = (room?.BookingCode != null ? String(room.BookingCode).trim() : "") || bookingCode;
+  // Use the BookingCode from PreBook room if TBO updated it; for multi-room use first code
+  const primaryBookingCode = resolvedBookingCodes[0];
+  const finalBookingCode = (room?.BookingCode != null ? String(room.BookingCode).trim() : "") || primaryBookingCode;
 
-  const bookingCodes = new Set(
-    [String(bookingCode).trim(), String(finalBookingCode).trim()].filter(Boolean)
+  const bookingCodesSet = new Set(
+    [primaryBookingCode, String(finalBookingCode).trim(), ...resolvedBookingCodes].filter(Boolean)
   );
-  const aggregated = aggregateFareForRooms(hotelResult, bookingCodes, roomsN, {
+  const aggregated = aggregateFareForRooms(hotelResult, bookingCodesSet, roomsN, {
     totalFare: picked.totalFare,
     totalTax:  picked.totalTax,
   });
@@ -1169,10 +1317,17 @@ export async function bookHotel(input: BookInput) {
   const tboIsPackageFare            = validationInfo.PackageFare            ?? false;
   const tboIsPackageDetailsMandatory = validationInfo.PackageDetailsMandatory ?? false;
 
-  const HotelRoomsDetails = Array.from({ length: roomsN }, (_, r) => ({
-    HotelPassenger: guests
-      .slice(r * paxPerRoom, (r + 1) * paxPerRoom)
-      .map((g) => guestToTboPassenger(g)),
+  // Build TBO passengers — LeadPassenger driven by the actual leadGuest flag, not array index.
+  // guestToTboPassenger already wires email/phone on the lead guest.
+  const tboPassengers = guests.map((g) => ({
+    ...guestToTboPassenger(g),
+    LeadPassenger: g.leadGuest === true,
+  }));
+
+  // Each room gets the full passenger list with its own BookingCode
+  const HotelRoomsDetails = resolvedBookingCodes.map((roomCode) => ({
+    BookingCode:    roomCode,
+    HotelPassenger: tboPassengers,
   }));
 
   const requestedBookingMode = Number(process.env.TBO_HOTEL_REQUESTED_BOOKING_MODE ?? 5);
@@ -1200,6 +1355,9 @@ export async function bookHotel(input: BookInput) {
   }
   const strategies = dedupeBookStrategies(strategyCandidates);
 
+  // Pin ClientReferenceId across all retry strategies — same booking attempt
+  const clientReferenceId = `pt-${randomUUID().replace(/-/g, "")}`.slice(0, 40);
+
   const buildBookBody = (net: number, taxes?: number): Record<string, any> => {
     const b: Record<string, any> = {
       BookingCode:            finalBookingCode,
@@ -1211,7 +1369,7 @@ export async function bookHotel(input: BookInput) {
       TraceId:                traceId,
       NetAmount:              net,
       RequestedBookingMode:   bookingMode,
-      ClientReferenceId:      `pt-${randomUUID().replace(/-/g, "")}`.slice(0, 40),
+      ClientReferenceId:      clientReferenceId,
     };
     
     // Some versions of the TBO API expect PAN at the root level instead of/in addition to the passenger level
@@ -1245,26 +1403,20 @@ export async function bookHotel(input: BookInput) {
   let lastBookErr: any;
   for (const strat of strategies) {
     const body = buildBookBody(strat.net, strat.taxes);
-    console.log("[hotel-book] Final /Book payload:", JSON.stringify({
-      attempt:                    strat.label,
-      BookingCode:                body.BookingCode,
-      TraceId:                    body.TraceId,
-      NetAmount:                  body.NetAmount,
-      Taxes:                      body.Taxes,
-      IsVoucherBooking:           body.IsVoucherBooking,
-      IsPackageFare:              body.IsPackageFare,
-      IsPackageDetailsMandatory:  body.IsPackageDetailsMandatory,
-      GuestNationality:           body.GuestNationality,
-      EndUserIp:                  body.EndUserIp,
-      HotelRoomsCount:            HotelRoomsDetails.length,
-      PaxPerRoom:                 paxPerRoom,
-    }, null, 2));
+    console.log("[hotel-book] ─── Attempting TBO /Book ───");
+    console.log("[hotel-book] Strategy:", strat.label);
+    console.log("[hotel-book] Payload sent to TBO:", JSON.stringify(body, null, 2));
+    
     try {
-      return await tboPostWithClient(httpHotelBook, "/Book", body);
+      const tboResponse = await tboPostWithClient(httpHotelBook, "/Book/", body);
+      console.log("[hotel-book] ✅ TBO /Book success. Raw TBO response:", JSON.stringify(tboResponse, null, 2));
+      return tboResponse;
     } catch (e: any) {
       lastBookErr = e;
+      console.error(`[hotel-book] ❌ TBO /Book failed for strategy "${strat.label}":`, e.message);
+      console.error(`[hotel-book] Error details:`, { message: e.message, tboCode: e.tboCode, stack: e.stack });
       if (!isInvalidNetAmountMessage(e?.message || "")) throw e;
-      console.warn(`[hotel-book] /Book "${strat.label}" rejected:`, e?.message);
+      console.warn(`[hotel-book] Will retry with next pricing strategy (if available)...`);
     }
   }
   throw lastBookErr;
@@ -1279,26 +1431,134 @@ export async function getHotelBookingDetail(input: {
   bookingId: string;
 }) {
   const tokenId = await authenticate();
-  return tboPostWithClient(httpHotelBook, "/GetBookingDetails", {
+  return tboPostWithClient(httpHotelBook, "/GetBookingDetails/", {
     BookingId: input.bookingId,
     TokenId:   tokenId,
   });
 }
 
+/**
+ * Hotel Cancel — two-step flow per hotelnew API docs:
+ *   1. POST /SendChangeRequest  → ChangeRequestId
+ *   2. POST /GetChangeRequestStatus → refund amount
+ *
+ * Docs: https://apidoc.tektravels.com/hotelnew/HotelSendChange.aspx
+ * Host: https://HotelBE.tektravels.com/hotelservice.svc/rest
+ * Auth: Basic Auth header (agency credentials) — NO BookingMode field
+ */
+export async function cancelHotelBooking(input: {
+  bookingId:    string;
+  requestType?: 4;     // 4 = HotelCancel (only valid value per docs)
+  remarks?:     string;
+}) {
+  const tokenId    = await authenticate();
+  const endUserIp  = resolveBookingEndUserIp();
+  const authHeader = getBookingAuthHeader();
+
+  const cancelHeaders = {
+    "Content-Type": "application/json",
+    Accept:         "application/json",
+    Authorization:  authHeader,
+  };
+
+  // Step 1 — SendChangeRequest
+  // Host: https://HotelBE.tektravels.com/hotelservice.svc/rest
+  // No BookingMode field — that belongs to the older /hotel API, not hotelnew
+  console.log(`[hotel-cancel] Step1 SendChangeRequest BookingId=${input.bookingId}`);
+  const sendPayload = {
+    EndUserIp:   endUserIp,
+    TokenId:     tokenId,
+    BookingId:   Number(input.bookingId),
+    RequestType: input.requestType ?? 4,
+    Remarks:     input.remarks || "Cancelled by user",
+  };
+
+  let sendResp: any;
+  try {
+    const { data } = await httpHotelCancel.post("/SendChangeRequest", sendPayload, {
+      headers: cancelHeaders,
+    });
+    sendResp = data;
+  } catch (err: any) {
+    const status = err?.response?.status;
+    const body   = err?.response?.data;
+    const msg    = body?.Error?.ErrorMessage || body?.error || err.message || "SendChangeRequest failed";
+    console.error("[hotel-cancel] SendChangeRequest HTTP error", { status, body });
+    throw new Error(`TBO SendChangeRequest failed: ${msg}`);
+  }
+
+  console.log("[hotel-cancel] SendChangeRequest response:", JSON.stringify(sendResp, null, 2));
+
+  // Check for errors
+  const errObj = sendResp?.Error;
+  if (errObj?.ErrorCode && errObj.ErrorCode !== 0) {
+    throw new Error(`TBO cancel rejected: ${errObj.ErrorMessage || `ErrorCode=${errObj.ErrorCode}`}`);
+  }
+  if (sendResp?.ResponseStatus !== undefined && Number(sendResp.ResponseStatus) !== 1) {
+    throw new Error(`TBO cancel failed: ResponseStatus=${sendResp.ResponseStatus}`);
+  }
+
+  const changeRequestId     = sendResp?.ChangeRequestId;
+  const changeRequestStatus = sendResp?.ChangeRequestStatus;
+
+  if (changeRequestId == null) {
+    throw new Error("TBO did not return a ChangeRequestId — cancel may not have been accepted");
+  }
+
+  // Step 2 — GetChangeRequestStatus (poll up to 5 times, 3s apart)
+  console.log(`[hotel-cancel] Step2 GetChangeRequestStatus ChangeRequestId=${changeRequestId}`);
+  let statusResp: any;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const { data } = await httpHotelCancel.post("/GetChangeRequestStatus", {
+        EndUserIp:       endUserIp,
+        TokenId:         tokenId,
+        ChangeRequestId: Number(changeRequestId),
+      }, { headers: cancelHeaders });
+      statusResp = data;
+    } catch (err: any) {
+      console.warn(`[hotel-cancel] GetChangeRequestStatus attempt ${attempt} failed:`, err.message);
+      if (attempt === 5) break;
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+
+    console.log(`[hotel-cancel] GetChangeRequestStatus attempt ${attempt}:`, JSON.stringify(statusResp, null, 2));
+    const crStatus = Number(statusResp?.ChangeRequestStatus ?? -1);
+    if (crStatus === 3 || crStatus === 4) break;  // 3=Processed, 4=Rejected
+    if (attempt < 5) await new Promise(r => setTimeout(r, 3000));
+  }
+
+  return {
+    sendChangeRequest:      sendResp,
+    getChangeRequestStatus: statusResp ?? null,
+    changeRequestId,
+    changeRequestStatus:    statusResp?.ChangeRequestStatus ?? changeRequestStatus,
+    cancellationCharge:     statusResp?.CancellationCharge  ?? null,
+    refundAmount:           statusResp?.RefundedAmount ?? statusResp?.RefundAmount ?? null,
+  };
+}
+
 /* ------------------------------------------------------------------ */
-/* CancelBooking  POST /Cancel                                        */
+/* GetHotelVoucher  POST /GetHotelVoucher                             */
+/* Retrieve voucher/e-ticket for a confirmed booking                  */
 /* Uses the Book host (HotelBE) — same as /Book                      */
 /* ------------------------------------------------------------------ */
 
-export async function cancelHotelBooking(input: {
-  bookingId:   string;
-  requestType: 1 | 4;
+export async function getHotelVoucher(input: {
+  bookingId: string;
+  endUserIp?: string;
 }) {
   const tokenId = await authenticate();
-  return tboPostWithClient(httpHotelBook, "/Cancel", {
-    BookingId:   input.bookingId,
-    RequestType: input.requestType,
-    Remarks:     "Cancelled by user",
-    TokenId:     tokenId,
+  const endUserIp = resolveBookingEndUserIp(input.endUserIp);
+  
+  console.log(`[hotel-voucher] Fetching voucher for booking: ${input.bookingId}`);
+  
+  return tboPostWithClient(httpHotelBook, "/GetHotelVoucher/", {
+    BookingId: input.bookingId,
+    EndUserIp: endUserIp,
+    TokenId:   tokenId,
   });
 }
+
+

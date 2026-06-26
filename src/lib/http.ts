@@ -25,6 +25,15 @@ export const HOTEL_BOOK_BASE =
   process.env.TBO_HOTEL_BOOK_BASE_URL ||
   "http://HotelApi.tektravels.com/BookingEngineService_Hotel/HotelService.svc/rest";
 
+/**
+ * Hotel Cancel (SendChangeRequest / GetChangeRequestStatus)
+ * Docs: https://apidoc.tektravels.com/hotelnew/HotelSendChange.aspx
+ * Host: https://HotelBE.tektravels.com/hotelservice.svc/rest
+ */
+export const HOTEL_CANCEL_BASE =
+  process.env.TBO_HOTEL_CANCEL_BASE_URL ||
+  "https://HotelBE.tektravels.com/hotelservice.svc/rest";
+
 export const HOTEL_STATIC_BASE =
   process.env.TBO_HOTEL_STATIC_BASE_URL ||
   "http://api.tbotechnology.in/TBOHolidays_HotelAPI";
@@ -44,23 +53,36 @@ export const httpFlight = axios.create({
   timeout: TIMEOUT,
 });
 
+import { attachLoggingInterceptor } from "./apiLogger.js";
+
 export const httpHotel = axios.create({
   baseURL: HOTEL_BASE,
   headers: { "Content-Type": "application/json", Accept: "application/json" },
   timeout: TIMEOUT,
 });
+attachLoggingInterceptor(httpHotel, "Hotel API");
 
 export const httpHotelStatic = axios.create({
   baseURL: HOTEL_STATIC_BASE,
   headers: { "Content-Type": "application/json", Accept: "application/json" },
   timeout: TIMEOUT,
 });
+attachLoggingInterceptor(httpHotelStatic, "Hotel Static API");
 
 export const httpHotelBook = axios.create({
   baseURL: HOTEL_BOOK_BASE,
   headers: { "Content-Type": "application/json", Accept: "application/json" },
   timeout: TIMEOUT,
 });
+attachLoggingInterceptor(httpHotelBook, "Hotel Book API");
+
+/** Dedicated client for TBO hotel cancel (SendChangeRequest / GetChangeRequestStatus) */
+export const httpHotelCancel = axios.create({
+  baseURL: HOTEL_CANCEL_BASE,
+  headers: { "Content-Type": "application/json", Accept: "application/json" },
+  timeout: TIMEOUT,
+});
+attachLoggingInterceptor(httpHotelCancel, "Hotel Cancel API");
 
 
 /** Helpers that other files already import */
