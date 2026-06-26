@@ -817,9 +817,18 @@ export type SSRInput = {
 export async function getSSR(input: SSRInput & {
   skipFareQuote?: boolean;
   allResultIndexes?: string[];
+  fareQuoteResultIndex?: string | number;
+  isLCC?: boolean;
 }) {
-  const { traceId, resultIndex, skipFareQuote = false } = input;
-  // allResultIndexes is no longer used — each leg is called individually
+    
+    const {
+      traceId,
+      resultIndex,
+      skipFareQuote = false,
+      allResultIndexes,
+      fareQuoteResultIndex,
+      isLCC,
+    } = input;
 
   if (!traceId || resultIndex === undefined || resultIndex === null) {
     throw new Error("traceId and resultIndex are required");
@@ -829,37 +838,35 @@ export async function getSSR(input: SSRInput & {
   const EndUserIp = getEndUserIp();
 
   let ssrResultIndex: string | number = resultIndex;
+  const hasFareQuoteResultIndex =
+    fareQuoteResultIndex !== undefined && fareQuoteResultIndex !== null && fareQuoteResultIndex !== "";
 
-  if (!skipFareQuote) {
+  if (hasFareQuoteResultIndex) {
+    ssrResultIndex = fareQuoteResultIndex;
+    console.log("[getSSR] Using existing FareQuote ResultIndex for SSR:", ssrResultIndex);
+  } else if (skipFareQuote || isLCC === false) {
+    console.log("[getSSR] Skipping FareQuote pre-call, using ResultIndex directly:", resultIndex);
+  } else {
     try {
-      const fqBody = {
-        EndUserIp,
-        TokenId,
-        TraceId:     String(traceId),
-        ResultIndex: resultIndex,  // single leg only, never joined
-      };
-
-      console.log("[getSSR] FareQuote pre-call with ResultIndex:", resultIndex);
-
+      const fqResultIndex = allResultIndexes && allResultIndexes.length > 1
+        ? allResultIndexes.join(",")
+        : resultIndex;
+      
+      const fqBody = { EndUserIp, TokenId, TraceId: String(traceId), ResultIndex: fqResultIndex };
       const { data: fqData } = await httpFlight.post("/FareQuote", fqBody, {
         headers: { "Content-Type": "application/json", Accept: "application/json" },
       });
 
       const fqErr = fqData?.Response?.Error;
       if (fqErr && fqErr.ErrorCode && fqErr.ErrorCode !== 0) {
-        console.warn("[getSSR] FareQuote error:", fqErr.ErrorCode, fqErr.ErrorMessage, "— using original ResultIndex");
+        console.warn("[getSSR] FareQuote pre-call error:", fqErr.ErrorCode, fqErr.ErrorMessage, "— using original ResultIndex");
       } else {
-        const fqResult = fqData?.Response?.Results;
-        // Results can be array (multi-city) or object (one-way/round-trip)
-        const resolved = Array.isArray(fqResult)
-          ? fqResult[0]?.ResultIndex
-          : fqResult?.ResultIndex;
-        if (resolved) {
-          ssrResultIndex = resolved;
-          console.log("[getSSR] FareQuote resolved ResultIndex:", ssrResultIndex);
-        }
-      }
-    } catch (fqErr: any) {
+      const fqResult = fqData?.Response?.Results;
+      const resolvedIndex = Array.isArray(fqResult)
+        ? fqResult[0]?.ResultIndex     // multi-city
+        : fqResult?.ResultIndex;        // one-way / round-trip
+      if (resolvedIndex) ssrResultIndex = resolvedIndex;
+    }} catch (fqErr: any) {
       console.warn("[getSSR] FareQuote pre-call failed — using original ResultIndex:", fqErr.message);
     }
   }
@@ -1999,3 +2006,6 @@ async function fetchCalendarPrices({
   calendarCache.set(cacheKey, { ts: Date.now(), data: priceMap });
   return priceMap;
 }
+
+
+

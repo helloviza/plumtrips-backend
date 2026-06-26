@@ -2,9 +2,9 @@
 import { Router } from "express";
 import crypto from "crypto";
 
+import { generateTicketPdf } from "../../component/flight/TicketPDF.js";
+
 import {
-  bookFlight,
-  ticketFlight,
   ticketLCC,
   getBookingDetails,
   getAirports,
@@ -12,6 +12,9 @@ import {
   getCalendarPrices,
   
 } from "../../services/tbo/flight.service.js";
+
+
+import { bookFlight,ticketFlight } from "../../component/flight/flightBookTicket.js";
 
 import { 
   getFareRule,
@@ -193,6 +196,7 @@ r.post("/tbo/ssr", async (req, res) => {
     const data = await getSSR({
       traceId:          req.body.traceId,
       resultIndex:      req.body.resultIndex
+      
     });
     const ssrError = data?.Response?.Error;
     if (ssrError?.ErrorCode && ssrError.ErrorCode !== 0) {
@@ -211,33 +215,34 @@ r.post("/tbo/ssr", async (req, res) => {
 
 
 
-r.post("/tbo/book", async (req, res) => {
-  try {
-    console.log("[/tbo/book] Incoming request body:", JSON.stringify(req.body, null, 2));
-    const data = req.body?.isLCC === true
-      ? await ticketLCC(req.body)
-      : await bookFlight(req.body);
-    res.json(ok(data));
-  } catch (e: any) {
-    const errMsg = axiosMessage(e);
-    console.error("[/tbo/book] Error:", errMsg);
-    console.error("[/tbo/book] Full error:", e);
-    res.status(400).json(fail(errMsg));
-  }
-});
+
+// r.post("/tbo/book", async (req, res) => {
+//   try {
+//     console.log("[/tbo/book] Incoming request body:", JSON.stringify(req.body, null, 2));
+//     const data = req.body?.isLCC === true
+//       ? await ticketLCC(req.body)
+//       : await bookFlight(req.body);
+//     res.json(ok(data));
+//   } catch (e: any) {
+//     const errMsg = axiosMessage(e);
+//     console.error("[/tbo/book] Error:", errMsg);
+//     console.error("[/tbo/book] Full error:", e);
+//     res.status(400).json(fail(errMsg));
+//   }
+// });
 
 
 
-r.post("/tbo/ticket", async (req, res) => {
-  try {
-    const data = req.body?.isLCC === true
-      ? await ticketLCC(req.body)
-      : await ticketFlight(req.body);
-    res.json(ok(data));
-  } catch (e: any) {
-    res.status(400).json(fail(axiosMessage(e)));
-  }
-});
+// r.post("/tbo/ticket", async (req, res) => {
+//   try {
+//     const data = req.body?.isLCC === true
+//       ? await ticketLCC(req.body)
+//       : await ticketFlight(req.body);
+//     res.json(ok(data));
+//   } catch (e: any) {
+//     res.status(400).json(fail(axiosMessage(e)));
+//   }
+// });
 
 
 
@@ -361,3 +366,133 @@ r.get("/tbo/airlines", (_req, res) => {
 
 export default r;
 
+
+
+
+r.post("/tbo/book", async (req, res) => {
+  try {
+    console.log("[/tbo/book] Incoming request body:", JSON.stringify(req.body, null, 2));
+
+    if (req.body?.isLCC === true) {
+      return res.status(400).json(
+        fail("LCC flights do not require a book step. Call /tbo/ticket directly.")
+      );
+    }
+
+    const data = await bookFlight(req.body);  // flat body matches BookInput shape ✅
+    res.json(ok(data));
+
+  } catch (e: any) {
+    const errMsg = axiosMessage(e);
+    console.error("[/tbo/book] Error:", errMsg);
+    res.status(400).json(fail(errMsg));
+  }
+});
+
+
+r.post("/tbo/ticket", async (req, res) => {
+  try {
+    console.log("[/tbo/ticket] Incoming request body:", JSON.stringify(req.body, null, 2));
+
+    const isLCC = req.body?.isLCC === true;
+
+    // Normalize casing — frontend sends PascalCase, guard against camelCase too
+    const traceId     = req.body.TraceId     ?? req.body.traceId;
+    const resultIndex = req.body.ResultIndex ?? req.body.resultIndex;
+    const passengers  = req.body.Passengers  ?? req.body.passengers;
+    const pnr         = req.body.PNR         ?? req.body.pnr;
+    const bookingId   = req.body.BookingId   ?? req.body.bookingId;
+    const passport    = req.body.Passport    ?? req.body.passport;
+    const isPriceChangeAccepted =
+      req.body.IsPriceChangeAccepted ?? req.body.isPriceChangeAccepted ?? false;
+
+    if (!traceId) return res.status(400).json(fail("TraceId is required"));
+
+    let data;
+
+    if (isLCC) {
+      if (!resultIndex)      return res.status(400).json(fail("ResultIndex is required for LCC ticketing"));
+      if (!passengers?.length) return res.status(400).json(fail("Passengers are required for LCC ticketing"));
+
+      data = await ticketFlight({
+        type: "lcc",
+        data: {
+          TraceId:               traceId,
+          ResultIndex:           resultIndex,
+          Passengers:            passengers,
+          IsPriceChangeAccepted: isPriceChangeAccepted,
+        },
+      });
+
+    } else {
+      if (!pnr)       return res.status(400).json(fail("PNR is required for Non-LCC ticketing"));
+      if (!bookingId) return res.status(400).json(fail("BookingId is required for Non-LCC ticketing"));
+
+      data = await ticketFlight({
+        type: "nonLCC",
+        data: {
+          TraceId:               traceId,
+          PNR:                   pnr,
+          BookingId:             Number(bookingId),
+          ...(passport?.length ? { Passport: passport } : {}),
+          IsPriceChangeAccepted: isPriceChangeAccepted,
+        },
+      });
+    }
+
+    res.json(ok(data));
+
+  } catch (e: any) {
+    const errMsg = axiosMessage(e);
+    console.error("[/tbo/ticket] Error:", errMsg);
+    res.status(400).json(fail(errMsg));
+  }
+});
+
+
+
+
+
+
+// ── 1. ADD THIS IMPORT at the top of index.ts ─────────────────────────────────
+// import { generateTicketPdf } from "../../component/flight/ticketPdf.js";
+
+
+// ── 2. ADD THIS ROUTE after r.post("/tbo/ticket", ...) ────────────────────────
+
+r.post("/tbo/ticket/pdf", async (req, res) => {
+  try {
+    const body = req.body;
+    console.log("[/tbo/ticket/pdf] keys received:", Object.keys(body ?? {}));
+
+    // Body is the reconstructed TicketResponse from BookingPage:
+    // { PNR, BookingId, TicketStatus, IsPriceChanged, IsTimeChanged, FlightItinerary }
+    const ticketResponse = body?.FlightItinerary
+      ? body                          // already top-level shape ✅
+      : body?.Response ?? body;       // unwrap if accidentally double-wrapped
+
+    if (!ticketResponse?.FlightItinerary) {
+      console.error("[/tbo/ticket/pdf] Missing FlightItinerary. Keys:", Object.keys(body ?? {}));
+      return res.status(400).json(fail("Missing FlightItinerary in request body"));
+    }
+
+    const pdfBuffer = await generateTicketPdf(ticketResponse);
+    const pnr = ticketResponse.PNR
+      ?? ticketResponse.FlightItinerary?.PNR
+      ?? String(ticketResponse.FlightItinerary?.BookingId ?? "ticket");
+
+    console.log(`[/tbo/ticket/pdf] PDF generated, ${pdfBuffer.length} bytes, PNR: ${pnr}`);
+
+    res.set({
+      "Content-Type":        "application/pdf",
+      "Content-Disposition": `attachment; filename="ticket-${pnr}.pdf"`,
+      "Content-Length":      String(pdfBuffer.length),
+      "Cache-Control":       "no-store",
+    });
+    res.end(pdfBuffer);
+
+  } catch (e: any) {
+    console.error("[/tbo/ticket/pdf] Error:", e.message);
+    res.status(500).json(fail(e.message ?? "PDF generation failed"));
+  }
+});
