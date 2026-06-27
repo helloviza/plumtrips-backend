@@ -56,6 +56,9 @@ const HotelBookingSchema = new Schema(
     },
     traceId: { type: String },
     rawTboResponse: { type: Schema.Types.Mixed }, // Full booking response
+    cancelledAt: { type: Date },                  // Set when TBO confirms cancellation
+    cancelError: { type: String },                // Set when TBO cancel fails
+    rawCancelResponse: { type: Schema.Types.Mixed }, // Full TBO cancel response
   },
   { timestamps: true }
 );

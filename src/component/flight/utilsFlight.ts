@@ -1,4 +1,4 @@
-import { authenticate, getEndUserIp, invalidateToken } from "../../services/tbo/auth.service.js";
+import { getTBOToken} from "../../services/tbo/auths.services.js";
 import { httpFlight } from "../../lib/http.js";
 import type {RawSearchParams,PriceRBDParams} from "./flightComponent.js";
 
@@ -10,8 +10,8 @@ export const TBO_ANY_TIME = "00:00:00";
 
 /** Attach auth fields to any TBO request body. */
 async function withAuth<T extends object>(body: T) {
-  const TokenId   = await authenticate();
-  const EndUserIp = getEndUserIp();
+  const TokenId   = await getTBOToken();
+  const EndUserIp = process.env.TBO_EndUserIp;
   return { EndUserIp, TokenId, ...body };
 }
 
@@ -95,10 +95,10 @@ export async function rawFareQuote({ traceId, resultIndex }: FareQuoteParams) {
       msg.toLowerCase().includes("traceid") ||
       msg.toLowerCase().includes("expired");
 
-    if (isSession) {
-      invalidateToken();
-      throw new Error("SESSION_EXPIRED");
-    }
+    // if (isSession) {
+    //   invalidateToken();
+    //   throw new Error("SESSION_EXPIRED");
+    // }
     throw new Error(msg || "FareQuote failed");
   }
 
@@ -133,6 +133,9 @@ export interface SSRParams {
   resultIndex: string | number;
 }
 
+
+
+// And update rawSSR() to use withAuth like rawFareQuote does:
 export async function rawSSR({ traceId, resultIndex }: SSRParams) {
   const body = await withAuth({
     TraceId:     String(traceId),
@@ -157,4 +160,32 @@ export function isMultiCityTrip(body: any): boolean {
     Array.isArray(body?.segments) &&
     body.segments.length >= 2
   );
+}
+
+
+
+
+///Cancellation Params
+
+export interface CancellationParams {
+  bookingId: number;
+  source: string;
+}
+
+export async function rawCancellation(params: CancellationParams) {
+  const body = await withAuth({
+    BookingId: Number(params.bookingId),  // ✅ PascalCase
+    Source:    String(params.source),     // ✅ PascalCase
+  });
+
+  console.log("[rawCancellation] Request body:", JSON.stringify(body, null, 2));
+
+  const { data } = await httpFlight.post("/ReleasePNRRequest", body, {
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+  });
+
+  console.log("[rawCancellation] TBO response:", JSON.stringify(data, null, 2));
+
+  assertNoTBOError(data?.Response?.Error, "ReleasePNRRequest");
+  return data;
 }

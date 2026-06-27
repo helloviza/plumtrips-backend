@@ -1,0 +1,32 @@
+{
+  "method": "Authenticate",
+  "traceId": "no-trace",
+  "clientReferenceId": null,
+  "bookingId": null,
+  "timestamp": "2026-06-26T12:35:01.973Z",
+  "durationMs": 185,
+  "request": {
+    "ClientId": "ApiIntegrationNew",
+    "UserName": "Neelanchal",
+    "Password": "***",
+    "EndUserIp": "3.111.17.8"
+  },
+  "response": {
+    "Status": 1,
+    "TokenId": "bf7592de-8fb4-4aa9-9df8-dfdfa5affc2e",
+    "Error": {
+      "ErrorCode": 0,
+      "ErrorMessage": ""
+    },
+    "Member": {
+      "FirstName": "Neelanchal",
+      "LastName": "Bhargava",
+      "Email": "neelb@plumtrips.com",
+      "MemberId": 58491,
+      "AgencyId": 58281,
+      "LoginName": "Neelanchal",
+      "LoginDetails": "Login Success at#@ 26/06/2026 02:49:27 #@ IPAddress: 3.111.17.8",
+      "isPrimaryAgent": false
+    }
+  }
+}

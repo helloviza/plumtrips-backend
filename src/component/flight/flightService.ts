@@ -1,9 +1,10 @@
-import {isMultiCityTrip,rawFareQuote,rawFareRule,rawPriceRBD} from "./utilsFlight.js";
+import {isMultiCityTrip,rawFareQuote,rawFareRule,rawPriceRBD,rawCancellation} from "./utilsFlight.js";
 import {searchMultiCityAsOneWay, searchFlights,} from "./flightSearch.js";
-import { authenticate, getEndUserIp, invalidateToken } from "../../services/tbo/auth.service.js";
+import { getTBOToken} from "../../services/tbo/auths.services.js";
 import { httpFlight } from "../../lib/http.js";
-import type {FareQuoteParams, FareRuleParams, SSRParams} from "./utilsFlight.js";
+import type {FareQuoteParams, FareRuleParams, SSRParams,CancellationParams} from "./utilsFlight.js";
 import type {PriceRBDParams} from "./flightComponent.js";
+
 
 
 export async function handleSearchController(body: any): Promise<{
@@ -79,8 +80,8 @@ export async function getSSR(input: SSRParams & {
     throw new Error("traceId and resultIndex are required");
   }
 
-  const TokenId   = await authenticate();
-  const EndUserIp = getEndUserIp();
+  const TokenId   = await getTBOToken();
+  const EndUserIp = process.env.TBO_EndUserIp;
 
   let ssrResultIndex: string | number = resultIndex;
 
@@ -135,13 +136,24 @@ export async function getSSR(input: SSRParams & {
   if (err && err.ErrorCode && err.ErrorCode !== 0) {
     const msg = err.ErrorMessage || "";
     console.log(`[getSSR] SSR ErrorCode ${err.ErrorCode}: ${msg} — returning empty`);
-    if (msg.toLowerCase().includes("session") || msg.toLowerCase().includes("expired")) {
-      invalidateToken();
-    }
+    // if (msg.toLowerCase().includes("session") || msg.toLowerCase().includes("expired")) {
+    //   invalidateToken();
+    // }
     return err.ErrorCode === 6 || err.ErrorCode === 25
       ? { Response: { SSR: [] } }
       : { Response: { SSR: [], Error: { ErrorCode: err.ErrorCode, ErrorMessage: msg } } };
   }
 
   return data;
+}
+
+
+export async function cancelPNR(params: CancellationParams) {
+  if (!params.bookingId) {
+    throw new Error("bookingId is required");
+  }
+  if (!params.source) {
+    throw new Error("source is required");
+  }
+  return rawCancellation(params);
 }

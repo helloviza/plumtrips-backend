@@ -28,6 +28,7 @@ import {
   getHotelBookingDetail,
   cancelHotelBooking,
   validateDateRange,
+  getHotelVoucher,
 } from "../../services/hotels/hotel.service.js";
 import {
   authenticate,
@@ -208,15 +209,31 @@ r.get("/cities", async (req: Request, res: Response) => {
 /**
  * POST /api/v1/hotels/city-hotels
  * TBOHotelCodeList — get hotel codes for a city (needed before /search)
- * Body: { cityCode: string }
+ * Body: { cityCode: string, countryCode?: string }
+ * countryCode is optional but recommended to avoid cross-country city code collisions
  */
 r.post("/city-hotels", async (req: Request, res: Response) => {
-  const { cityCode } = req.body || {};
+  const { cityCode, countryCode } = req.body || {};
   if (!cityCode || typeof cityCode !== "string" || !cityCode.trim()) {
     return res.status(400).json(fail("cityCode is required and must be a non-empty string"));
   }
+  
+  const cleanCityCode = cityCode.trim();
+  const cc = countryCode ? String(countryCode).trim().toUpperCase() : undefined;
+  
+  // Log for debugging city/country mismatches
+  console.log(`[hotel-city-hotels] Fetching hotels for cityCode=${cleanCityCode}${cc ? ` countryCode=${cc}` : ''}`);
+  
   try {
-    const data = await getHotelCodeListByCity(cityCode.trim());
+    const data = await getHotelCodeListByCity(cleanCityCode);
+    
+    // If countryCode was provided, log warning if response seems to be from wrong country
+    // (This is informational only - TBO doesn't validate country in TBOHotelCodeList)
+    if (cc && data) {
+      const hotelCodes = (data as any)?.HotelCodes || (data as any)?.Hotels || [];
+      console.log(`[hotel-city-hotels] Retrieved ${Array.isArray(hotelCodes) ? hotelCodes.length : 0} hotels for ${cleanCityCode} (expected country: ${cc})`);
+    }
+    
     return res.json(ok(data));
   } catch (err: any) {
     if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
@@ -351,8 +368,15 @@ r.post("/search", async (req: Request, res: Response) => {
 
 /**
  * POST /api/v1/hotels/prebook
- * PreBook — verify latest price & availability before booking
+ * PreBook — fetches real-time cancellation policy, pricing and availability from TBO.
+ * This is the ONLY correct source for cancellation dates — do NOT use Search data.
  * Body: { bookingCode, traceId }  — traceId must match POST /search response.traceId
+ *
+ * On success returns TBO PreBook response including:
+ *   HotelResult[].Rooms[].CancellationPolicies  — cancellation deadlines and charges
+ *   HotelResult[].Rooms[].LastCancellationDate  — free cancellation deadline
+ *   HotelResult[].Rooms[].TotalFare             — confirmed price
+ *   HotelResult[].Rooms[].IsPriceChanged        — whether price changed since search
  */
 r.post("/prebook", async (req: Request, res: Response) => {
   const { bookingCode, traceId } = req.body || {};
@@ -372,7 +396,21 @@ r.post("/prebook", async (req: Request, res: Response) => {
     return res.json(ok(data));
   } catch (err: any) {
     if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
-    return res.status(400).json(fail(errMsg(err)));
+
+    const msg = errMsg(err);
+
+    // TBO account has insufficient balance — prebook requires balance for this account type.
+    // Return a 402 so the frontend knows why prebook failed and can show an appropriate message.
+    if (msg.toLowerCase().includes("insufficient balance") || msg.toLowerCase().includes("insufficient fund")) {
+      console.warn(`[hotel-prebook] TBO Insufficient Balance for bookingCode=${bookingCode.trim().slice(0, 30)}… — TBO account needs top-up`);
+      return res.status(402).json(fail(
+        "Cancellation policy unavailable — TBO account has insufficient balance. " +
+        "Please add balance to the TBO account to enable prebook.",
+        { code: "TBO_INSUFFICIENT_BALANCE", bookingCode: bookingCode.trim() }
+      ));
+    }
+
+    return res.status(400).json(fail(msg));
   }
 });
 
@@ -411,7 +449,7 @@ r.post("/prebook", async (req: Request, res: Response) => {
  */
 r.post("/book", async (req: Request, res: Response) => {
   const {
-    bookingCode, guestNationality, traceId,
+    bookingCode, bookingCodes: inputBookingCodes, guestNationality, traceId,
     isVoucherBooking,
     guests, contact,
     isPackageFare, isPackageDetailsMandatory,
@@ -420,9 +458,15 @@ r.post("/book", async (req: Request, res: Response) => {
     hotelId, hotelName, location, checkIn, checkOut, priceDetails, roomDetails
   } = req.body || {};
 
+  // Resolve booking codes — multi-room sends bookingCodes[], single-room sends bookingCode
+  const resolvedCodes: string[] =
+    Array.isArray(inputBookingCodes) && inputBookingCodes.length > 0
+      ? inputBookingCodes.map((c: any) => String(c).trim()).filter(Boolean)
+      : bookingCode ? [String(bookingCode).trim()] : [];
+
   // Required fields
   const missing: string[] = [];
-  if (!bookingCode)                                missing.push("bookingCode");
+  if (resolvedCodes.length === 0)                  missing.push("bookingCode (or bookingCodes)");
   if (!traceId || !String(traceId).trim())         missing.push("traceId");
   if (!guestNationality)                           missing.push("guestNationality");
   if (!Array.isArray(guests) || guests.length < 1) missing.push("guests (min 1)");
@@ -477,7 +521,8 @@ r.post("/book", async (req: Request, res: Response) => {
 
   try {
     const data = await bookHotel({
-      bookingCode:      String(bookingCode).trim(),
+      bookingCode:      resolvedCodes[0],
+      bookingCodes:     resolvedCodes,
       traceId:          String(traceId).trim(),
       guestNationality: nat,
       endUserIp,
@@ -509,34 +554,60 @@ r.post("/book", async (req: Request, res: Response) => {
     });
 
     // Normalize the TBO Book response so the frontend always gets a consistent shape.
-    // TBO returns the booking reference in BookResult.TBOReferenceNo (and also
-    // ConfirmationNo / BookingRefNo). Surface all of them as top-level fields.
     const bookResult = (data as any)?.BookResult ?? (data as any);
-    const bookingId  =
-      bookResult?.TBOReferenceNo  ||
-      bookResult?.BookingRefNo    ||
-      bookResult?.ConfirmationNo  ||
-      null;
+    
+    // TBO returns multiple IDs — extract them all
+    const numericBookingId = bookResult?.BookingId || null;  // Numeric ID for voucher API
+    const tboReferenceNo   = bookResult?.TBOReferenceNo || null;
+    const confirmationNo   = bookResult?.ConfirmationNo || null;
+    const bookingRefNo     = bookResult?.BookingRefNo || null;
 
-    console.log("[hotel-book] Booking confirmed:", {
-      bookingId,
-      hotelBookingStatus: bookResult?.HotelBookingStatus,
-      invoiceNumber:      bookResult?.InvoiceNumber,
-      confirmationNo:     bookResult?.ConfirmationNo,
-      tboReferenceNo:     bookResult?.TBOReferenceNo,
+    // ── CRITICAL: Detect silent TBO failures ─────────────────────────────────
+    // If TBO didn't return a BookingId AND HotelBookingStatus isn't a success
+    // value, the booking did NOT go through. Never fabricate a PNR in this case.
+    const bookingStatus = (bookResult?.HotelBookingStatus as string | undefined)?.toLowerCase() ?? "";
+    const successStatuses = ["confirmed", "vouchered", "booked"];
+    const hasBookingId    = numericBookingId != null;
+    const hasSuccessStatus = successStatuses.some(s => bookingStatus.includes(s));
+
+    // Also catch if the entire bookResult is a plain error string that slipped through
+    if (typeof bookResult === "string" || (!hasBookingId && !hasSuccessStatus)) {
+      const tboMsg = typeof bookResult === "string"
+        ? bookResult
+        : bookResult?.Status?.Description || bookResult?.Error?.ErrorMessage || "TBO did not confirm the booking";
+      console.error("[hotel-book] TBO did NOT confirm booking. Raw bookResult:", JSON.stringify(bookResult, null, 2));
+      return res.status(502).json(fail(`TBO rejected booking: ${tboMsg}`, {
+        tboResponse: bookResult,
+        hint: "Common causes: BookingCode/TraceId expired (must complete checkout within ~15 min), or test credentials cannot book live inventory.",
+      }));
+    }
+
+    // Use numeric BookingId if available, otherwise fallback to reference numbers
+    const bookingId = numericBookingId || tboReferenceNo || bookingRefNo || confirmationNo || null;
+
+    console.log("[hotel-book] Booking confirmed - TBO IDs:", {
+      BookingId:          numericBookingId,
+      TBOReferenceNo:     tboReferenceNo,
+      ConfirmationNo:     confirmationNo,
+      BookingRefNo:       bookingRefNo,
+      HotelBookingStatus: bookResult?.HotelBookingStatus,
+      InvoiceNumber:      bookResult?.InvoiceNumber,
     });
+    
+    // Log full TBO response for debugging (temporary)
+    console.log("[hotel-book] Full TBO BookResult:", JSON.stringify(bookResult, null, 2));
 
-    const pnr = `PT-HTL-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    // Generate internal PNR — only reached when TBO confirmed successfully above
+    const internalPnr = `PT-HTL-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
-    // Async DB save (non-blocking)
-    if (hotelId) {
-      HotelBooking.create({
-        pnr,
+    // Async DB save (non-blocking) — always save, hotelId is optional
+    HotelBooking.create({
+        pnr: internalPnr,
         user: (req as any).user?.id || undefined, // If authentication middleware sets req.user
-        tboBookingId: bookResult?.TBOReferenceNo || bookResult?.BookingRefNo,
-        tboConfirmationNo: bookResult?.ConfirmationNo || bookingId,
-        hotelId,
-        hotelName,
+        tboBookingId: numericBookingId || tboReferenceNo || bookingRefNo,  // Store numeric ID
+        tboConfirmationNo: confirmationNo || numericBookingId,
+        hotelId: hotelId || "unknown",
+        hotelName: hotelName || "Unknown Hotel",
         location,
         checkIn: checkIn ? new Date(checkIn) : new Date(),
         checkOut: checkOut ? new Date(checkOut) : new Date(),
@@ -555,27 +626,50 @@ r.post("/book", async (req: Request, res: Response) => {
           pan: g.pan,
         })),
         rooms: roomDetails || [],
-        priceDetails: priceDetails || {
-          total: 0,
-          taxes: 0,
-          additionalCharges: 0,
-        },
+        priceDetails: priceDetails?.total
+          ? priceDetails
+          : {
+              total:             bookResult?.TotalFare ?? bookResult?.NetAmount ?? 0,
+              taxes:             bookResult?.TotalTax  ?? 0,
+              additionalCharges: 0,
+            },
         traceId: String(traceId).trim(),
         rawTboResponse: bookResult,
       }).catch((err: any) => {
         console.error("[hotel-book] Error persisting booking to DB:", err);
       });
-    }
 
     return res.json(ok({
-      ...((data as any) ?? {}),
-      // Convenience fields for the frontend
-      pnr,
-      bookingId,
+      // Frontend-friendly response with clear field naming
+      // Use numeric BookingId for voucher API, ConfirmationNo/PNR for display
+      
+      // Internal PNR for our system
+      pnr: internalPnr,
+      
+      // ⭐ Numeric TBO BookingId - THIS is what /voucher needs
+      BookingId:          numericBookingId,
+      bookingId:          numericBookingId,
+      
+      // PNR/Confirmation strings - for display to users
+      ConfirmationNo:     confirmationNo,
+      confirmationNo:     confirmationNo,
+      TBOReferenceNo:     tboReferenceNo,
+      tboReferenceNo:     tboReferenceNo,
+      BookingRefNo:       bookingRefNo,
+      bookingRefNo:       bookingRefNo,
+      
+      // Booking status and details
+      HotelBookingStatus: bookResult?.HotelBookingStatus ?? null,
       hotelBookingStatus: bookResult?.HotelBookingStatus ?? null,
+      InvoiceNumber:      bookResult?.InvoiceNumber      ?? null,
       invoiceNumber:      bookResult?.InvoiceNumber      ?? null,
-      confirmationNo:     bookResult?.ConfirmationNo     ?? null,
-      tboReferenceNo:     bookResult?.TBOReferenceNo     ?? null,
+      
+      // ⭐ Voucher URL — TBO sometimes returns this directly in the Book response
+      // If present, frontend can use it immediately without calling /voucher
+      voucherUrl: bookResult?.VoucherUrl || bookResult?.VoucherURL || bookResult?.Voucher || null,
+      
+      // Include full TBO response for any additional fields frontend might need
+      tboResponse:        bookResult,
     }));
   } catch (err: any) {
     if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
@@ -585,49 +679,126 @@ r.post("/book", async (req: Request, res: Response) => {
 
 /**
  * POST /api/v1/hotels/booking-detail
- * GetBookingDetails — booking confirmation / status
- * Body: { bookingId }
+ * Returns booking details from local DB — TBO GetBookingDetails is not
+ * available on this account. All required data is stored at booking time.
+ * Body: { bookingId }  — accepts PNR, tboBookingId, or tboConfirmationNo
  */
 r.post("/booking-detail", async (req: Request, res: Response) => {
   const { bookingId } = req.body || {};
   if (!bookingId || !String(bookingId).trim()) {
     return res.status(400).json(fail("bookingId is required and must be a non-empty string"));
   }
+
+  const id = String(bookingId).trim();
+
   try {
-    const data = await getHotelBookingDetail({ bookingId: String(bookingId).trim() });
-    return res.json(ok(data));
+    const booking = await HotelBooking.findOne({
+      $or: [
+        { pnr:               id.toUpperCase() },
+        { tboBookingId:      id },
+        { tboConfirmationNo: id },
+      ],
+    }).lean();
+
+    if (!booking) return res.status(404).json(fail("Booking not found"));
+    return res.json(ok(booking));
   } catch (err: any) {
-    if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
-    return res.status(400).json(fail(errMsg(err)));
+    return res.status(500).json(fail(errMsg(err)));
   }
 });
 
 /**
  * POST /api/v1/hotels/cancel
- * CancelBooking
- * Body: { bookingId, requestType }  — requestType: 1=Cancellation, 4=Amendment
+ * Cancels a hotel booking with TBO and updates the DB.
+ *
+ * Body: { bookingId, requestType? }
+ *   bookingId    — TBO numeric BookingId (from /book response) OR internal PNR (PT-HTL-...)
+ *   requestType  — 4 = HotelCancel (default, only valid value per TBO docs)
+ *
+ * On success: TBO processes the cancellation and refunds the amount to your TBO account balance.
+ * On failure: returns the exact TBO error so you know why it was rejected.
  */
 r.post("/cancel", async (req: Request, res: Response) => {
   const { bookingId, requestType } = req.body || {};
 
-  const missing: string[] = [];
-  if (!bookingId)          missing.push("bookingId");
-  if (requestType == null) missing.push("requestType");
-  if (missing.length) return res.status(400).json(fail(`Missing required fields: ${missing.join(", ")}`));
-
-  const reqType = Number(requestType);
-  if (reqType !== 1 && reqType !== 4) return res.status(400).json(fail("requestType must be 1 (Cancellation) or 4 (Amendment)"));
-
-  try {
-    const data = await cancelHotelBooking({
-      bookingId:   String(bookingId).trim(),
-      requestType: reqType as 1 | 4,
-    });
-    return res.json(ok(data));
-  } catch (err: any) {
-    if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
-    return res.status(400).json(fail(errMsg(err)));
+  if (!bookingId || !String(bookingId).trim()) {
+    return res.status(400).json(fail("bookingId is required (use the TBO BookingId from the /book response, or your internal PNR)"));
   }
+
+  const reqType = requestType != null ? Number(requestType) : 4;
+  if (reqType !== 4) {
+    return res.status(400).json(fail("requestType must be 4 (the only valid value for hotel cancellation per TBO)"));
+  }
+
+  let id = String(bookingId).trim();
+
+  // If a PNR was passed (PT-HTL-...), look up the numeric TBO BookingId from DB
+  if (id.toUpperCase().startsWith("PT-HTL-")) {
+    try {
+      const dbBooking = await HotelBooking.findOne({ pnr: id.toUpperCase() }).lean();
+      if (!dbBooking) return res.status(404).json(fail(`No booking found for PNR ${id}`));
+      const tboId = (dbBooking as any).tboBookingId;
+      if (!tboId) return res.status(400).json(fail(`Booking ${id} has no TBO BookingId on record — cannot cancel via API`));
+      id = String(tboId).trim();
+      console.log(`[hotel-cancel] Resolved PNR ${bookingId} → TBO BookingId ${id}`);
+    } catch (dbErr: any) {
+      return res.status(500).json(fail(`DB lookup failed: ${dbErr.message}`));
+    }
+  }
+
+  // Call TBO cancel
+  let tboResult: any;
+  try {
+    console.log(`[hotel-cancel] Calling TBO cancel for BookingId=${id} requestType=${reqType}`);
+    tboResult = await cancelHotelBooking({ bookingId: id, requestType: 4 });
+    console.log(`[hotel-cancel] TBO response:`, JSON.stringify(tboResult, null, 2));
+  } catch (err: any) {
+    const msg = errMsg(err);
+    console.error(`[hotel-cancel] TBO cancel failed for BookingId=${id}:`, msg);
+
+    // Still mark DB as CancelFailed so ops team can follow up
+    await HotelBooking.updateOne(
+      { $or: [{ pnr: String(bookingId).trim().toUpperCase() }, { tboBookingId: id }, { tboConfirmationNo: id }] },
+      { $set: { status: "CancelFailed", cancelError: msg } }
+    ).catch(() => {});
+
+    if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO service unreachable — try again shortly"));
+    return res.status(400).json(fail(`TBO cancellation failed: ${msg}`, { tboBookingId: id }));
+  }
+
+  // Update DB status to match actual TBO outcome
+  const finalStatus = tboResult.changeRequestStatus === 3 ? "Cancelled"
+                    : tboResult.changeRequestStatus === 4 ? "CancelRejected"
+                    : "CancelPending";
+  try {
+    await HotelBooking.updateOne(
+      { $or: [{ pnr: String(bookingId).trim().toUpperCase() }, { tboBookingId: id }, { tboConfirmationNo: id }] },
+      { $set: { status: finalStatus, cancelledAt: new Date(), rawCancelResponse: tboResult } }
+    );
+  } catch (dbErr: any) {
+    console.error("[hotel-cancel] DB update error (non-fatal):", dbErr.message);
+  }
+
+  return res.json(ok({
+    bookingId:          id,
+    requestType:        reqType,
+    // Reflect the actual TBO status — don't claim "Cancelled" if still Pending/InProgress
+    status:             tboResult.changeRequestStatus === 3 ? "Cancelled"
+                      : tboResult.changeRequestStatus === 4 ? "CancelRejected"
+                      : "CancelPending",
+    changeRequestId:    tboResult.changeRequestId,
+    changeRequestStatus: tboResult.changeRequestStatus,
+    // 3 = Processed, 1 = Pending, 2 = InProgress, 4 = Rejected
+    changeRequestStatusLabel: ({ 0: "NotSet", 1: "Pending", 2: "InProgress", 3: "Processed", 4: "Rejected" } as any)[tboResult.changeRequestStatus] ?? "Unknown",
+    cancellationCharge: tboResult.cancellationCharge,
+    refundAmount:       tboResult.refundAmount,
+    message:            tboResult.changeRequestStatus === 3
+      ? `Booking cancelled. Refund of ₹${tboResult.refundAmount ?? "N/A"} will be credited to your TBO account balance.`
+      : tboResult.changeRequestStatus === 4
+      ? `Cancellation rejected by TBO (ChangeRequestId: ${tboResult.changeRequestId}). Please contact support.`
+      : `Cancellation request submitted (ChangeRequestId: ${tboResult.changeRequestId}). Status: ${tboResult.changeRequestStatus === 1 ? "Pending" : "InProgress"} — check back shortly.`,
+    tboResponse: tboResult,
+  }));
 });
 
 /**
@@ -647,6 +818,279 @@ r.get("/booking/:pnr", async (req: Request, res: Response) => {
   } catch (err: any) {
     return res.status(500).json(fail(errMsg(err)));
   }
+});
+
+/**
+ * POST /api/v1/hotels/voucher
+ * Get hotel voucher/e-ticket for a confirmed booking
+ * Body: { bookingId }
+ * 
+ * NOTE: TBO's GetHotelVoucher requires the NUMERIC BookingId from the /Book response,
+ * NOT the PNR or ConfirmationNo string. If a PNR is provided, we look it up in the DB.
+ */
+r.post("/voucher", async (req: Request, res: Response) => {
+  let { bookingId } = req.body || {};
+  
+  if (!bookingId || !String(bookingId).trim()) {
+    return res.status(400).json(fail("bookingId is required and must be a non-empty string"));
+  }
+
+  bookingId = String(bookingId).trim();
+  
+  console.log("[hotel-voucher] Request received:", { bookingId });
+
+  // ── Strategy 1: Look up booking in DB and return VoucherUrl from stored TBO response ──
+  // This avoids needing a separate TBO API call entirely.
+  try {
+    const booking = await HotelBooking.findOne({
+      $or: [
+        { pnr: bookingId.toUpperCase() },
+        { tboBookingId: bookingId },
+        { tboConfirmationNo: bookingId },
+      ]
+    });
+
+    if (booking) {
+      const raw = (booking as any).rawTboResponse;
+      const voucherUrl = raw?.VoucherUrl || raw?.VoucherURL || raw?.Voucher
+                      || raw?.BookResult?.VoucherUrl || raw?.BookResult?.VoucherURL
+                      || null;
+      const status = raw?.HotelBookingStatus || raw?.BookResult?.HotelBookingStatus || "Confirmed";
+
+      if (voucherUrl) {
+        console.log("[hotel-voucher] ✅ Found VoucherUrl in stored booking:", voucherUrl);
+        return res.json(ok({ voucherUrl, status, bookingId, source: "db" }));
+      }
+      
+      console.log("[hotel-voucher] No VoucherUrl in DB record. rawTboResponse keys:", Object.keys(raw || {}));
+    }
+  } catch (dbErr: any) {
+    console.error("[hotel-voucher] DB lookup error:", dbErr.message);
+  }
+
+  // ── Strategy 2: If PNR/non-numeric, look up numeric tboBookingId from DB ──
+  if (isNaN(Number(bookingId)) || bookingId.includes('-') || /[A-Za-z]/.test(bookingId)) {
+    console.log("[hotel-voucher] Input looks like a PNR — no numeric bookingId found in DB:", bookingId);
+    return res.status(404).json(fail(
+      "Voucher URL not available for this booking yet. " +
+      "Please check your confirmation email or contact support with your booking reference."
+    ));
+  }
+
+  // ── Strategy 3: Call TBO GetHotelVoucher with numeric BookingId ──
+  const forwarded  = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() || "";
+  const fromSocket = (req.socket?.remoteAddress && String(req.socket.remoteAddress).trim()) || "";
+  const endUserIp  = forwarded || fromSocket;
+
+  console.log("[hotel-voucher] Calling TBO GetHotelVoucher with BookingId:", bookingId);
+
+  try {
+    const data = await getHotelVoucher({ bookingId, endUserIp });
+    
+    console.log("[hotel-voucher] TBO response:", JSON.stringify(data, null, 2));
+    
+    const result     = (data as any)?.GetHotelVoucherResult ?? (data as any);
+    const voucherUrl = result?.VoucherUrl || result?.VoucherURL || result?.voucherUrl || result?.Url;
+    const voucherPdf = result?.VoucherPDF || result?.VoucherPdf || result?.voucherPdf;
+    const status     = result?.HotelBookingStatus || result?.Status;
+
+    if (!voucherUrl && !voucherPdf) {
+      console.error("[hotel-voucher] No voucher URL in TBO response. Keys:", Object.keys(result || {}));
+      return res.status(500).json(fail(
+        "Voucher not available yet. Please try again in a few minutes or check your confirmation email."
+      ));
+    }
+
+    return res.json(ok({
+      ...(voucherUrl ? { voucherUrl } : {}),
+      ...(voucherPdf ? { voucherPdf } : {}),
+      ...(status     ? { status }     : {}),
+      bookingId,
+      source: "tbo",
+    }));
+  } catch (err: any) {
+    if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
+    console.error("[hotel-voucher] TBO call error:", err.message);
+    return res.status(400).json(fail(errMsg(err)));
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* GET /api/v1/hotels/voucher/:bookingId                              */
+/* Returns a print-ready HTML e-ticket from DB booking data.         */
+/* Works with: internal PNR, tboBookingId, or tboConfirmationNo      */
+/* ------------------------------------------------------------------ */
+r.get("/voucher/:bookingId", async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  if (!bookingId?.trim()) return res.status(400).send("bookingId is required");
+
+  let booking: any;
+  try {
+    booking = await HotelBooking.findOne({
+      $or: [
+        { pnr:              bookingId.trim().toUpperCase() },
+        { tboBookingId:     bookingId.trim() },
+        { tboConfirmationNo: bookingId.trim() },
+      ],
+    }).lean();
+  } catch (e: any) {
+    return res.status(500).send("Database error");
+  }
+
+  if (!booking) return res.status(404).send("Booking not found");
+
+  const fmt = (d: Date | string | undefined) => {
+    if (!d) return "—";
+    const dt = new Date(d);
+    // Use UTC values to avoid timezone shift — dates are stored as UTC midnight
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return `${String(dt.getUTCDate()).padStart(2,"0")} ${months[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`;
+  };
+
+  const nights = booking.checkIn && booking.checkOut
+    ? Math.round((new Date(booking.checkOut).getTime() - new Date(booking.checkIn).getTime()) / 86_400_000)
+    : 0;
+
+  const leadGuest = booking.guests?.find((g: any) => g.leadGuest) ?? booking.guests?.[0];
+  const guestName = leadGuest ? `${leadGuest.title ?? ""} ${leadGuest.firstName} ${leadGuest.lastName}`.trim() : "—";
+
+  const totalAmount = booking.priceDetails?.total
+    ? `₹${Number(booking.priceDetails.total).toLocaleString("en-IN")}`
+    : "—";
+
+  const rooms: any[] = booking.rooms ?? [];
+  const roomLine = rooms.length > 0
+    ? rooms.map((r: any) => `${r.quantity ?? 1}× ${r.name ?? r.type ?? "Room"}`).join(", ")
+    : "1× Room";
+
+  const guestRows = (booking.guests ?? []).map((g: any) => `
+    <tr>
+      <td>${g.title ?? ""} ${g.firstName} ${g.lastName}</td>
+      <td>${g.paxType === 2 ? "Child" : "Adult"}</td>
+      <td>${g.leadGuest ? "✓" : ""}</td>
+    </tr>`).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hotel E-Ticket — ${booking.pnr}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 13px; color: #222; background: #f5f5f5; }
+    .page { max-width: 800px; margin: 24px auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.12); }
+    .header { background: #1a3c6e; color: #fff; padding: 24px 32px; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 22px; letter-spacing: .5px; }
+    .header .badge { background: #28a745; color: #fff; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+    .section { padding: 20px 32px; border-bottom: 1px solid #eee; }
+    .section:last-child { border-bottom: none; }
+    .section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: #1a3c6e; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .field label { display: block; font-size: 11px; color: #888; margin-bottom: 3px; }
+    .field span { font-weight: 600; font-size: 13px; }
+    .highlight { background: #f0f4ff; border-left: 4px solid #1a3c6e; padding: 12px 16px; border-radius: 4px; }
+    .highlight .pnr { font-size: 20px; font-weight: 700; color: #1a3c6e; letter-spacing: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { background: #f0f4ff; text-align: left; padding: 8px 10px; color: #555; font-weight: 600; }
+    td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+    .total-row td { font-weight: 700; font-size: 14px; color: #1a3c6e; border-top: 2px solid #1a3c6e; }
+    .footer { text-align: center; padding: 16px; font-size: 11px; color: #aaa; background: #fafafa; }
+    .print-btn { display: block; margin: 0 auto 20px; padding: 10px 28px; background: #1a3c6e; color: #fff; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+    @media print {
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      body { background: #fff; margin: 0; }
+      .page { box-shadow: none; margin: 0; border-radius: 0; max-width: 100%; }
+      .print-btn, .no-print { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div style="text-align:center;padding:16px 0;">
+    <button class="print-btn" id="printBtn">🖨 Print / Save as PDF</button>
+  </div>
+  <div class="page">
+    <div class="header">
+      <div>
+        <div style="font-size:11px;opacity:.7;margin-bottom:4px;">PLUMTRIPS — HOTEL E-TICKET</div>
+        <h1>${booking.hotelName ?? "Hotel Booking"}</h1>
+        <div style="margin-top:6px;font-size:12px;opacity:.85;">${booking.location ?? ""}</div>
+      </div>
+      <div class="badge">✓ ${booking.status ?? "CONFIRMED"}</div>
+    </div>
+
+    <div class="section">
+      <div class="highlight">
+        <div style="font-size:11px;color:#555;margin-bottom:4px;">BOOKING REFERENCE</div>
+        <div class="pnr">${booking.pnr}</div>
+        ${booking.tboConfirmationNo ? `<div style="font-size:11px;color:#555;margin-top:4px;">TBO Confirmation: ${booking.tboConfirmationNo}</div>` : ""}
+        ${booking.tboBookingId ? `<div style="font-size:11px;color:#555;">TBO Booking ID: ${booking.tboBookingId}</div>` : ""}
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Stay Details</h2>
+      <div class="grid">
+        <div class="field"><label>Check-In</label><span>${fmt(booking.checkIn)}</span></div>
+        <div class="field"><label>Check-Out</label><span>${fmt(booking.checkOut)}</span></div>
+        <div class="field"><label>Duration</label><span>${nights} Night${nights !== 1 ? "s" : ""}</span></div>
+        <div class="field"><label>Room(s)</label><span>${roomLine}</span></div>
+        <div class="field"><label>Lead Guest</label><span>${guestName}</span></div>
+        <div class="field"><label>Invoice No.</label><span>${booking.rawTboResponse?.InvoiceNumber ?? "—"}</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Guest Details</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Type</th><th>Lead</th></tr></thead>
+        <tbody>${guestRows || `<tr><td colspan="3">${guestName}</td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>Contact Information</h2>
+      <div class="grid-2">
+        <div class="field"><label>Email</label><span>${booking.contactInfo?.email ?? "—"}</span></div>
+        <div class="field"><label>Mobile</label><span>${booking.contactInfo?.mobile ?? "—"}</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Payment Summary</h2>
+      <table>
+        <thead><tr><th>Description</th><th style="text-align:right">Amount</th></tr></thead>
+        <tbody>
+          <tr><td>Base Fare</td><td style="text-align:right">₹${Number((booking.priceDetails?.total ?? 0) - (booking.priceDetails?.taxes ?? 0) - (booking.priceDetails?.additionalCharges ?? 0)).toLocaleString("en-IN")}</td></tr>
+          <tr><td>Taxes &amp; Fees</td><td style="text-align:right">₹${Number(booking.priceDetails?.taxes ?? 0).toLocaleString("en-IN")}</td></tr>
+          ${booking.priceDetails?.additionalCharges ? `<tr><td>Additional Charges</td><td style="text-align:right">₹${Number(booking.priceDetails.additionalCharges).toLocaleString("en-IN")}</td></tr>` : ""}
+        </tbody>
+        <tfoot><tr class="total-row"><td>Total Paid</td><td style="text-align:right">${totalAmount}</td></tr></tfoot>
+      </table>
+    </div>
+
+    <div class="footer">
+      Booked via Plumtrips &nbsp;|&nbsp; ${new Date().toLocaleDateString("en-IN")} &nbsp;|&nbsp; support@plumtrips.com<br/>
+      This is a computer-generated document and does not require a signature.
+    </div>
+  </div>
+  <script>
+    function doPrint() { window.print(); }
+
+    // Wire button
+    document.getElementById('printBtn').addEventListener('click', doPrint);
+
+    // Auto-open print dialog when page loads (works even via window.open)
+    window.addEventListener('load', function() {
+      setTimeout(doPrint, 500);
+    });
+  </script>
+</body>
+</html>`;
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(html);
 });
 
 export default r;

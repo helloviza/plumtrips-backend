@@ -19,7 +19,7 @@ import { bookFlight,ticketFlight } from "../../component/flight/flightBookTicket
 import { 
   getFareRule,
   getFareQuote,
-  getSSR,} from "../../component/flight/flightService.js";
+  getSSR,cancelPNR} from "../../component/flight/flightService.js";
 
 
 
@@ -494,5 +494,34 @@ r.post("/tbo/ticket/pdf", async (req, res) => {
   } catch (e: any) {
     console.error("[/tbo/ticket/pdf] Error:", e.message);
     res.status(500).json(fail(e.message ?? "PDF generation failed"));
+  }
+});
+
+
+
+
+r.post("/tbo/CancelPNR", async (req, res) => {
+  try {
+    const { bookingId, source } = req.body;
+
+    if (!bookingId) {
+      return res.status(400).json(fail("bookingId is required"));
+    }
+    if (!source) {
+      return res.status(400).json(fail("source is required"));
+    }
+
+    console.log("[/tbo/CancelPNR] Incoming:", { bookingId, source });
+
+    const data = await cancelPNR({
+      bookingId: Number(bookingId),
+      source:    String(source),
+    });
+
+    res.json(ok(data));
+  } catch (e: any) {
+    const errMsg = axiosMessage(e);
+    console.error("[/tbo/CancelPNR] Error:", errMsg);
+    res.status(400).json(fail(errMsg));
   }
 });
