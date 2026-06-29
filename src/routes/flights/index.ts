@@ -193,10 +193,14 @@ r.post("/tbo/fare-quote", async (req, res) => {
 
 r.post("/tbo/ssr", async (req, res) => {
   try {
+    // skipFareQuote: true — the frontend always runs apiFareQuote before calling
+    // this endpoint and sends the fare-quoted ResultIndex. Running fareQuote again
+    // here creates a new TBO session which invalidates the SSR state,
+    // causing TBO ErrorCode 27 "No SSR details found."
     const data = await getSSR({
-      traceId:          req.body.traceId,
-      resultIndex:      req.body.resultIndex
-      
+      traceId:       req.body.traceId,
+      resultIndex:   req.body.resultIndex,
+      skipFareQuote: true,
     });
     const ssrError = data?.Response?.Error;
     if (ssrError?.ErrorCode && ssrError.ErrorCode !== 0) {
@@ -364,28 +368,63 @@ r.get("/tbo/airlines", (_req, res) => {
   res.json(ok(getAirlines()));
 });
 
-export default r;
 
 
 
 
 r.post("/tbo/book", async (req, res) => {
   try {
-    console.log("[/tbo/book] Incoming request body:", JSON.stringify(req.body, null, 2));
-
     if (req.body?.isLCC === true) {
-      return res.status(400).json(
-        fail("LCC flights do not require a book step. Call /tbo/ticket directly.")
-      );
+      return res.status(400).json(fail("LCC flights do not use /book."));
     }
 
-    const data = await bookFlight(req.body);  // flat body matches BookInput shape ✅
+    const { traceId, resultIndex, passengers, contact, gst } = req.body;
+    const hasGST = !!gst?.GSTNumber?.trim();
+
+    const enrichedPassengers = (passengers ?? []).map((p: any) => {
+      const fare = p.Fare ?? p.fare;
+      const safeFare = fare ? {
+        BaseFare:             Math.max(0, fare.BaseFare ?? 0),
+        Tax:                  Math.max(0, fare.Tax      ?? 0),
+        TransactionFee:       0,
+        YQTax:                0,
+        AdditionalTxnFeeOfrd: 0,
+        AdditionalTxnFeePub:  0,
+        AirTransFee:          0,
+      } : undefined;
+
+      return {
+        ...p,
+        Nationality:             p.Nationality || "IN",
+        GSTNumber:               hasGST ? gst.GSTNumber                                   : "",
+        GSTCompanyName:          hasGST ? (gst.GSTCompanyName    || "")                   : "",
+        GSTCompanyAddress:       hasGST ? (gst.GSTCompanyAddress || "")                   : "",
+        GSTCompanyContactNumber: hasGST ? (contact?.Mobile       || "")                   : "",
+        GSTCompanyEmail:         hasGST ? (gst.GSTCompanyEmail   || contact?.Email || "") : "",
+        ...(safeFare ? { Fare: safeFare } : {}),
+      };
+    });
+
+    // ── TEMP DEBUG ───────────────────────────────────────────
+    console.log("[/tbo/book] Enriched passengers being sent:");
+    console.log(JSON.stringify(enrichedPassengers, null, 2));
+    // ────────────────────────────────────────────────────────
+
+    const data = await bookFlight({ traceId, resultIndex, passengers: enrichedPassengers });
     res.json(ok(data));
 
   } catch (e: any) {
     const errMsg = axiosMessage(e);
-    console.error("[/tbo/book] Error:", errMsg);
-    res.status(400).json(fail(errMsg));
+    console.error("[/tbo/book] ❌ Final error:", errMsg);
+    // ── Return full error detail to frontend temporarily ─────
+    res.status(400).json({
+      ok:      false,
+      message: errMsg,
+      debug: {
+        tboError: (e as any)?.response?.data ?? null,
+        message:  errMsg,
+      }
+    });
   }
 });
 
@@ -525,3 +564,6 @@ r.post("/tbo/CancelPNR", async (req, res) => {
     res.status(400).json(fail(errMsg));
   }
 });
+
+
+export default r;

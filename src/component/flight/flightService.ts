@@ -85,39 +85,39 @@ export async function getSSR(input: SSRParams & {
 
   let ssrResultIndex: string | number = resultIndex;
 
-  if (!skipFareQuote) {
-    try {
-      const fqBody = {
-        EndUserIp,
-        TokenId,
-        TraceId:     String(traceId),
-        ResultIndex: resultIndex,  // single leg only, never joined
-      };
+  // if (!skipFareQuote) {
+  //   try {
+  //     const fqBody = {
+  //       EndUserIp,
+  //       TokenId,
+  //       TraceId:     String(traceId),
+  //       ResultIndex: resultIndex,  // single leg only, never joined
+  //     };
 
-      console.log("[getSSR] FareQuote pre-call with ResultIndex:", resultIndex);
+  //     console.log("[getSSR] FareQuote pre-call with ResultIndex:", resultIndex);
 
-      const { data: fqData } = await httpFlight.post("/FareQuote", fqBody, {
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-      });
+  //     const { data: fqData } = await httpFlight.post("/FareQuote", fqBody, {
+  //       headers: { "Content-Type": "application/json", Accept: "application/json" },
+  //     });
 
-      const fqErr = fqData?.Response?.Error;
-      if (fqErr && fqErr.ErrorCode && fqErr.ErrorCode !== 0) {
-        console.warn("[getSSR] FareQuote error:", fqErr.ErrorCode, fqErr.ErrorMessage, "— using original ResultIndex");
-      } else {
-        const fqResult = fqData?.Response?.Results;
-        // Results can be array (multi-city) or object (one-way/round-trip)
-        const resolved = Array.isArray(fqResult)
-          ? fqResult[0]?.ResultIndex
-          : fqResult?.ResultIndex;
-        if (resolved) {
-          ssrResultIndex = resolved;
-          console.log("[getSSR] FareQuote resolved ResultIndex:", ssrResultIndex);
-        }
-      }
-    } catch (fqErr: any) {
-      console.warn("[getSSR] FareQuote pre-call failed — using original ResultIndex:", fqErr.message);
-    }
-  }
+  //     const fqErr = fqData?.Response?.Error;
+  //     if (fqErr && fqErr.ErrorCode && fqErr.ErrorCode !== 0) {
+  //       console.warn("[getSSR] FareQuote error:", fqErr.ErrorCode, fqErr.ErrorMessage, "— using original ResultIndex");
+  //     } else {
+  //       const fqResult = fqData?.Response?.Results;
+  //       // Results can be array (multi-city) or object (one-way/round-trip)
+  //       const resolved = Array.isArray(fqResult)
+  //         ? fqResult[0]?.ResultIndex
+  //         : fqResult?.ResultIndex;
+  //       if (resolved) {
+  //         ssrResultIndex = resolved;
+  //         console.log("[getSSR] FareQuote resolved ResultIndex:", ssrResultIndex);
+  //       }
+  //     }
+  //   } catch (fqErr: any) {
+  //     console.warn("[getSSR] FareQuote pre-call failed — using original ResultIndex:", fqErr.message);
+  //   }
+  // }
 
   const body = {
     EndUserIp,
