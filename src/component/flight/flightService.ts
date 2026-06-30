@@ -1,6 +1,6 @@
 import {isMultiCityTrip,rawFareQuote,rawFareRule,rawPriceRBD,rawCancellation} from "./utilsFlight.js";
 import {searchMultiCityAsOneWay, searchFlights,} from "./flightSearch.js";
-import { getTBOToken} from "../../services/tbo/auths.services.js";
+import { authenticate} from "../../services/tbo/auth.service.js";
 import { httpFlight } from "../../lib/http.js";
 import type {FareQuoteParams, FareRuleParams, SSRParams,CancellationParams} from "./utilsFlight.js";
 import type {PriceRBDParams} from "./flightComponent.js";
@@ -80,7 +80,7 @@ export async function getSSR(input: SSRParams & {
     throw new Error("traceId and resultIndex are required");
   }
 
-  const TokenId   = await getTBOToken();
+  const TokenId   = await authenticate();
   const EndUserIp = process.env.TBO_EndUserIp;
 
   let ssrResultIndex: string | number = resultIndex;

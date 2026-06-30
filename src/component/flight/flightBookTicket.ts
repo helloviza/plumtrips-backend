@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { httpFlight } from "../../lib/http.js";
-import { getTBOToken} from "../../services/tbo/auths.services.js";
+import {authenticate} from "../../services/tbo/auth.service.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared Types
@@ -115,7 +115,7 @@ export interface BookResponse {
  * here but must be provided in ticketFlight if not supplied now.
  */
 export async function bookFlight(input: BookInput): Promise<BookResponse> {
-  const TokenId   = await getTBOToken(); 
+  const TokenId   = await authenticate(); 
   const EndUserIp = process.env.TBO_EndUserIp;
 
   const body = {
@@ -337,7 +337,7 @@ export async function ticketFlight(
     | { type: "nonLCC"; data: TicketNonLCCInput }
     | { type: "lcc";    data: TicketLCCInput }
 ): Promise<TicketResponse> {
-  const TokenId   = await getTBOToken(); 
+  const TokenId   = await authenticate(); 
   const EndUserIp = process.env.TBO_EndUserIp;
 
   let body: Record<string, unknown>;

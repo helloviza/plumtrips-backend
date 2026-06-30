@@ -1,4 +1,4 @@
-import { getTBOToken} from "../../services/tbo/auths.services.js";
+import { authenticate} from "../../services/tbo/auth.service.js";
 import { httpFlight } from "../../lib/http.js";
 import type {RawSearchParams,PriceRBDParams} from "./flightComponent.js";
 
@@ -10,7 +10,7 @@ export const TBO_ANY_TIME = "00:00:00";
 
 /** Attach auth fields to any TBO request body. */
 async function withAuth<T extends object>(body: T) {
-  const TokenId   = await getTBOToken();
+  const TokenId   = await authenticate();
   const EndUserIp = process.env.TBO_EndUserIp;
   return { EndUserIp, TokenId, ...body };
 }
