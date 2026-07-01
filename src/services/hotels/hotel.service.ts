@@ -66,6 +66,165 @@ function normalizeFiniteNumber(val: unknown): number | undefined {
   return undefined;
 }
 
+function normalizeDateString(val: unknown): string | undefined {
+  if (val == null || val === "") return undefined;
+  if (typeof val === "string") {
+    const str = val.trim();
+    return str ? str : undefined;
+  }
+  if (typeof val === "number" && Number.isFinite(val)) {
+    const date = new Date(val);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+  return undefined;
+}
+
+function coerceArray(raw: unknown): unknown[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw;
+  return [raw];
+}
+
+function normalizeCancellationPolicyItem(raw: unknown, defaultCurrency?: string): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+
+  const charge = normalizeFiniteNumber(item.charge ?? item.Charge ?? item.CancellationCharge ?? item.cancellationCharge);
+  const chargeType = normalizeFiniteNumber(
+    item.chargeType ?? item.ChargeType ?? item.CancellationChargeType ?? item.cancellationType ?? item.CancellationType
+  );
+  const currency = String(item.currency ?? item.Currency ?? item.CurrencyCode ?? defaultCurrency ?? "").trim() || undefined;
+  const fromDate = normalizeDateString(
+    item.fromDate ?? item.FromDate ?? item.From ?? item.fromDateCutoff ?? item.CutoffFromDate
+  );
+  const toDate = normalizeDateString(
+    item.toDate ?? item.ToDate ?? item.To ?? item.toDateCutoff ?? item.LastCancellationDate ?? item.FreeCancellationUntil ?? item.CutoffDate
+  );
+  const remarks = String(item.remarks ?? item.Remarks ?? item.Remark ?? item.CancellationPolicy ?? "").trim() || undefined;
+
+  if (charge === undefined && chargeType === undefined && !currency && !fromDate && !toDate && !remarks) return null;
+
+  const normalized: Record<string, unknown> = {};
+  if (charge !== undefined) {
+    normalized.charge = charge;
+    normalized.CancellationCharge = charge;
+  }
+  if (chargeType !== undefined) {
+    normalized.chargeType = chargeType;
+    normalized.ChargeType = chargeType;
+  }
+  if (currency) normalized.currency = currency;
+  if (fromDate) {
+    normalized.fromDate = fromDate;
+    normalized.FromDate = fromDate;
+  }
+  if (toDate) {
+    normalized.toDate = toDate;
+    normalized.ToDate = toDate;
+  }
+  if (remarks) {
+    normalized.remarks = remarks;
+    normalized.Remarks = remarks;
+  }
+  return normalized;
+}
+
+function sortCancellationPolicies(policies: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return policies.slice().sort((a, b) => {
+    const aDate = Date.parse(String(a.fromDate ?? a.FromDate ?? a.toDate ?? a.ToDate ?? ""));
+    const bDate = Date.parse(String(b.fromDate ?? b.FromDate ?? b.toDate ?? b.ToDate ?? ""));
+    if (Number.isNaN(aDate) && Number.isNaN(bDate)) return 0;
+    if (Number.isNaN(aDate)) return 1;
+    if (Number.isNaN(bDate)) return -1;
+    return aDate - bDate;
+  });
+}
+
+function normalizeRoomCancellationPolicies(room: Record<string, unknown>): void {
+  const currency = String(room.currency ?? room.Currency ?? room.CurrencyCode ?? room.CurrencyType ?? "").trim() || undefined;
+  const rawPolicies = room.CancellationPolicies ?? room.CancelPolicies ?? room.CancellationPolicy ?? room.CancelPolicy;
+  const policies = coerceArray(rawPolicies)
+    .map((item) => normalizeCancellationPolicyItem(item, currency))
+    .filter((item): item is Record<string, unknown> => item !== null);
+
+  if (policies.length > 0) {
+    const sorted = sortCancellationPolicies(policies).map((item) => ({
+      ...item,
+      amount: item.charge ?? item.CancellationCharge,
+      currencyCode: item.currency ?? item.Currency ?? item.CurrencyCode,
+      description: item.remarks ?? item.Remarks,
+    }));
+
+    room.CancelPolicies = sorted;
+    room.CancellationPolicies = sorted;
+
+    const freePolicy = sorted.find((item) => normalizeFiniteNumber(item.amount) === 0);
+    if (freePolicy) {
+      const cutoffDate = String(freePolicy.toDate ?? freePolicy.ToDate ?? "").trim();
+      if (cutoffDate) {
+        room.LastCancellationDate = cutoffDate;
+        room.FreeCancellationUntil = cutoffDate;
+      }
+    }
+    return;
+  }
+
+  const cutoff = normalizeDateString(room.LastCancellationDate ?? room.FreeCancellationUntil ?? room.CutoffDate ?? room.LastCancellationDate);
+  if (cutoff != null) {
+    const freePolicy: Record<string, unknown> = {
+      charge: 0,
+      CancellationCharge: 0,
+      amount: 0,
+      chargeType: 0,
+      ChargeType: 0,
+      currency,
+      currencyCode: currency,
+      toDate: cutoff,
+      ToDate: cutoff,
+      remarks: "Free cancellation until this date",
+      Remarks: "Free cancellation until this date",
+      description: "Free cancellation until this date",
+    };
+    if (normalizeDateString(room.FromDate ?? room.fromDate ?? room.fromDateCutoff ?? room.CutoffFromDate)) {
+      const freeFrom = normalizeDateString(room.FromDate ?? room.fromDate ?? room.fromDateCutoff ?? room.CutoffFromDate);
+      if (freeFrom) {
+        freePolicy.fromDate = freeFrom;
+        freePolicy.FromDate = freeFrom;
+      }
+    }
+    room.CancelPolicies = [freePolicy];
+    room.CancellationPolicies = [freePolicy];
+    room.LastCancellationDate = cutoff;
+    room.FreeCancellationUntil = cutoff;
+  }
+}
+
+function normalizePreBookCancellationResponse(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+
+  const normalizeEnvelope = (envelope: Record<string, unknown> | null) => {
+    if (!envelope) return;
+
+    const hotelResults = coerceArray(envelope.HotelResult ?? envelope.hotelResult);
+    for (const hr of hotelResults) {
+      if (!hr || typeof hr !== "object") continue;
+      const rooms = coerceArray((hr as Record<string, unknown>).Rooms ?? (hr as Record<string, unknown>).rooms);
+      for (const room of rooms) {
+        if (room && typeof room === "object") normalizeRoomCancellationPolicies(room as Record<string, unknown>);
+      }
+    }
+
+    const hotelRoomsDetails = coerceArray(envelope.HotelRoomsDetails ?? envelope.HotelRoomsDetails);
+    for (const room of hotelRoomsDetails) {
+      if (room && typeof room === "object") normalizeRoomCancellationPolicies(room as Record<string, unknown>);
+    }
+  };
+
+  normalizeEnvelope(raw as Record<string, unknown>);
+  normalizeEnvelope((raw as Record<string, unknown>).Response as Record<string, unknown> ?? null);
+  return raw;
+}
+
 /**
  * Search echoes TraceId under `Response`; some stacks wrap PreBook the same way.
  */
@@ -999,9 +1158,20 @@ export async function preBookHotel(input: {
   }, null, 2));
 
   // Use a shorter timeout for prebook (30s) — it's a price-check, not a booking
-  const result = await tboPostWithClient(httpHotel, "/PreBook", preBookPayload, { timeout: 30_000 });
+  let result: any;
+  try {
+    result = await tboPostWithClient(httpHotel, "/PreBook", preBookPayload, { timeout: 30_000 });
+  } catch (err: any) {
+    // Log the full raw TBO error response so it's visible in the terminal
+    // exactly like the TBO API docs show (HotelResult, Rooms, CancelPolicies etc.)
+    console.error("[hotel-prebook] TBO ERROR RESPONSE:", JSON.stringify(
+      err?.response?.data ?? { message: err?.message ?? "Unknown error" },
+      null, 2
+    ));
+    throw err;
+  }
   console.log("[hotel-prebook] TBO RAW RESPONSE:", JSON.stringify(result, null, 2));
-  return result;
+  return normalizePreBookCancellationResponse(result);
 
 }
 
