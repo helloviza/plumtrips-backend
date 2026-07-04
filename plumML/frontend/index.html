@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plumtrips AI Planner</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="brand-panel">
+      <div class="brand-mark">
+        <span class="brand-p">Plum</span><span class="brand-t">trips</span>
+      </div>
+      <p class="brand-tag">Voyage Luxe, Excel</p>
+
+      <div class="brand-copy">
+        <h1>Tell us the trip.<br/>We'll plan the days.</h1>
+        <p>Chat with our planner about your budget, vibe, and travelers —
+           we'll search live flights &amp; hotels, build a day-by-day plan,
+           and hand you a branded itinerary PDF.</p>
+      </div>
+
+      <ol class="steps">
+        <li>Chat your trip details</li>
+        <li>We price the cheapest flight + hotel combo</li>
+        <li>Gemini writes your day-wise plan</li>
+        <li>Download your personalized PDF</li>
+      </ol>
+    </aside>
+
+    <main class="chat-panel">
+      <div id="chatWindow" class="chat-window"></div>
+
+      <div id="resultCard" class="result-card hidden">
+        <div class="result-header">
+          <span class="result-eyebrow">Your trip is ready</span>
+          <span id="resultPrice" class="result-price"></span>
+        </div>
+        <div id="resultBreakdown" class="result-breakdown"></div>
+        <a id="pdfLink" class="pdf-button" href="#" target="_blank">Download Itinerary PDF ↓</a>
+      </div>
+
+      <form id="chatForm" class="chat-input-row">
+        <input id="chatInput" type="text" placeholder="e.g. Hi, I'm Priya, planning a relaxed Osaka + Kyoto trip for 2 adults, budget ₹3,00,000..." autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
