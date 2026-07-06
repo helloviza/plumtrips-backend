@@ -1,30 +1,9 @@
-const axios = require("axios");
-const config = require("../config/config");
+import axios from "axios";
+import { plannerConfig } from "../../config/planner.js";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-async function callGemini(systemInstruction, userText, { jsonMode = false } = {}) {
-  const url = `${BASE}/${config.gemini.model}:generateContent?key=${config.gemini.apiKey}`;
-
-  const body = {
-    contents: [{ role: "user", parts: [{ text: userText }] }],
-    systemInstruction: { parts: [{ text: systemInstruction }] },
-    generationConfig: jsonMode
-      ? { responseMimeType: "application/json", temperature: 0.7 }
-      : { temperature: 0.8 },
-  };
-
-  const { data } = await axios.post(url, body, { timeout: 30000 });
-  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
-  return text;
-}
-
-/**
- * Conversational slot-filling. Feeds the full chat history + latest user message,
- * asks Gemini to (a) reply naturally and (b) extract structured trip fields as JSON.
- * Returns { reply, slots, ready }.
- */
-const REQUIRED_SLOTS = [
+export const REQUIRED_SLOTS = [
   "guestName",
   "originCity",
   "originAirportCode",
@@ -37,9 +16,28 @@ const REQUIRED_SLOTS = [
   "children",
   "budgetINR",
   "tripVibe",
-];
+] as const;
 
-async function extractSlotsAndReply(history, latestMessage, currentSlots) {
+async function callGemini(systemInstruction: string, userText: string, { jsonMode = false } = {}) {
+  const url = `${BASE}/${plannerConfig.gemini.model}:generateContent?key=${plannerConfig.gemini.apiKey}`;
+  const body = {
+    contents: [{ role: "user", parts: [{ text: userText }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    generationConfig: jsonMode
+      ? { responseMimeType: "application/json", temperature: 0.7 }
+      : { temperature: 0.8 },
+  };
+
+  const { data } = await axios.post(url, body, { timeout: 30000 });
+  const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") || "";
+  return text;
+}
+
+export async function extractSlotsAndReply(
+  history: { role: "user" | "assistant"; text: string }[],
+  latestMessage: string,
+  currentSlots: Record<string, unknown>
+) {
   const system = `You are "Plumtrips Planner", a friendly travel-planning chatbot for an Indian travel agency.
 Your job across the conversation is to collect these trip fields from the user, one or two at a time,
 in a natural conversational way (don't interrogate — be warm, like a travel concierge):
@@ -78,11 +76,19 @@ Always respond with ONLY a JSON object, no markdown fences, shaped exactly as:
   }
 }
 
-/**
- * Generates a full day-wise itinerary (narrative + structured activities per day)
- * given the confirmed trip slots and the actual flight/hotel that were booked.
- */
-async function generateItinerary({ slots, outboundFlight, returnFlight, hotel, nights }) {
+export async function generateItinerary({
+  slots,
+  outboundFlight,
+  returnFlight,
+  hotel,
+  nights,
+}: {
+  slots: Record<string, any>;
+  outboundFlight: Record<string, any>;
+  returnFlight: Record<string, any>;
+  hotel: Record<string, any>;
+  nights: number;
+}) {
   const system = `You are an expert travel itinerary writer for a luxury travel agency called Plumtrips.
 Write a personalized, realistic, day-wise itinerary. Respond with ONLY valid JSON, no markdown fences, shaped as:
 
@@ -105,7 +111,7 @@ Use exactly ${nights + 1} days (arrival day through departure day).
 If the destination contains multiple cities separated by commas, treat this as a multi-city tour and spread the plan across those cities.
 Do not include any image fields in the itinerary JSON. Use only one hero image in the PDF, not per activity.
 Include details for both the outbound and return flights in the itinerary context.
-Ground it in the real booked flight and hotel details given below, and match the traveler's requested vibe. Be specific to real, well-known attractions in ${slots.destinationCity}.`;
+Ground it in the real booked flight and hotel details given below, and match the traveler\'s requested vibe.`;
 
   const userText = `Trip details:
 Guest: ${slots.guestName}
@@ -122,5 +128,3 @@ Booked hotel: ${hotel.name} (${hotel.starRating || "N/A"}-star), room: ${hotel.r
   const raw = await callGemini(system, userText, { jsonMode: true });
   return JSON.parse(raw);
 }
-
-module.exports = { extractSlotsAndReply, generateItinerary, REQUIRED_SLOTS };

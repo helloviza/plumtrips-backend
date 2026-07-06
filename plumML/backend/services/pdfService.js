@@ -5,10 +5,10 @@ const { buildItineraryHtml } = require("../templates/itineraryTemplate");
 
 const OUTPUT_DIR = path.join(__dirname, "..", "public", "generated");
 
-async function generateItineraryPdf({ slots, flight, hotel, combo, itinerary, heroImageUrl, sessionId }) {
+async function generateItineraryPdf({ slots, outboundFlight, returnFlight, hotel, combo, itinerary, heroImageUrl, sessionId }) {
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-  const html = buildItineraryHtml({ slots, flight, hotel, combo, itinerary, heroImageUrl });
+  const html = buildItineraryHtml({ slots, outboundFlight, returnFlight, hotel, combo, itinerary, heroImageUrl });
 
   const browser = await puppeteer.launch({
     headless: "new",

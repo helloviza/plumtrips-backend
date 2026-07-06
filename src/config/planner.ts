@@ -1,20 +1,23 @@
-require("dotenv").config();
+import "dotenv/config";
 
-module.exports = {
-  port: process.env.PORT || 5000,
-  publicBaseUrl: process.env.PUBLIC_BASE_URL || "http://localhost:5000",
+export const plannerConfig = {
+  port: Number(process.env.PORT || 5000),
+  publicBaseUrl:
+    process.env.PUBLIC_BASE_URL ||
+    process.env.BACKEND_PUBLIC_URL ||
+    `http://localhost:${process.env.PORT || 5000}`,
 
   gemini: {
-    apiKey: process.env.GEMINI_API_KEY,
+    apiKey: process.env.GEMINI_API_KEY || "",
     model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
   },
 
   plumtrips: {
-    baseUrl: process.env.PLUMTRIPS_BASE_URL || "https://api.plumtrips.com/api/v1"
+    baseUrl: process.env.PLUMTRIPS_BASE_URL || "https://api.plumtrips.com/api/v1",
   },
 
   unsplash: {
-    accessKey: process.env.UNSPLASH_ACCESS_KEY,
+    accessKey: process.env.UNSPLASH_ACCESS_KEY || "",
   },
 
   company: {

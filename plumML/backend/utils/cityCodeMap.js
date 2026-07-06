@@ -10,8 +10,8 @@ const DEMO_CITY_CODES = {
   tokyo: "115936", // placeholder — replace with the real PlumTrips code
   kyoto: "128243", // placeholder — replace with the real PlumTrips code
   chennai: "129002", // placeholder — add the real PlumTrips city code when available
-  "new york": "129001", // placeholder — add the real PlumTrips city code when available
-  "new york city": "129001",
+  newyork: "129001", // placeholder — add the real PlumTrips city code when available
+  newyorkcity: "129001",
   nyc: "129001",
 };
 
@@ -26,15 +26,19 @@ const IATA_CODES = {
   tokyo: "HND",
   osaka: "KIX",
   kyoto: "UKY", // Kyoto has no airport; nearest is Osaka(KIX)/Itami(ITM) — adjust per real usage
-  "new york": "JFK",
-  "new york city": "JFK",
+  newyork: "JFK",
+  newyorkcity: "JFK",
   nyc: "JFK",
 };
 
 const { searchHotelCities } = require("../services/plumtripsClient");
 
+function normalizeCityKey(cityName) {
+  return String(cityName || "").trim().toLowerCase().replace(/[\s\W_]+/g, "");
+}
+
 async function resolveCityCode(cityName, countryCode) {
-  const key = (cityName || "").trim().toLowerCase();
+  const key = normalizeCityKey(cityName);
   if (DEMO_CITY_CODES[key]) return DEMO_CITY_CODES[key];
 
   const response = await searchHotelCities(cityName, countryCode);
@@ -57,7 +61,7 @@ async function resolveCityCode(cityName, countryCode) {
 }
 
 function resolveAirportCode(cityName) {
-  const key = (cityName || "").trim().toLowerCase();
+  const key = normalizeCityKey(cityName);
   return IATA_CODES[key] || null;
 }
 

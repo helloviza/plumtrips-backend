@@ -1,19 +1,40 @@
-const config = require("../config/config");
-const { formatINR } = require("../utils/priceCalculator");
+import { formatINR } from "../../utils/plumml/priceCalculator.js";
+import { plannerConfig } from "../../config/planner.js";
 
-function buildItineraryHtml({ slots, outboundFlight, returnFlight, hotel, combo, itinerary, heroImageUrl }) {
-  const flight = outboundFlight || {};
-  const c = config.company;
+export function buildItineraryHtml({
+  slots,
+  outboundFlight,
+  returnFlight,
+  hotel,
+  combo,
+  itinerary,
+  heroImageUrl,
+}: {
+  slots: any;
+  outboundFlight: any;
+  returnFlight: any;
+  hotel: any;
+  combo: any;
+  itinerary: any;
+  heroImageUrl?: string;
+}) {
+  const c = {
+    name: plannerConfig.company.name,
+    subtitle: plannerConfig.company.subtitle,
+    address: plannerConfig.company.address,
+    phone: plannerConfig.company.phone,
+    email: plannerConfig.company.email,
+  };
 
   const daysHtml = itinerary.days
     .map(
-      (day) => `
+      (day: any) => `
     <div class="day">
       <div class="day-badge">Day ${day.dayNumber}</div>
       <h3>${day.title} <span class="day-date">${day.date || ""}</span></h3>
       ${day.activities
         .map(
-          (a) => `
+          (a: any) => `
         <div class="activity">
           <div class="activity-text">
             <div class="activity-time">${a.time}</div>
@@ -57,7 +78,6 @@ function buildItineraryHtml({ slots, outboundFlight, returnFlight, hotel, combo,
   .day h3 { margin: 4px 0 10px; font-size: 15px; }
   .day-date { color: #98a2b3; font-weight: 400; font-size: 12px; }
   .activity { display: flex; gap: 12px; margin-bottom: 10px; }
-  .activity img { width: 130px; height: 85px; object-fit: cover; border-radius: 8px; }
   .activity-time { font-size: 11px; font-weight: 700; color: #d97757; text-transform: uppercase; }
   .divider { border-top: 1px dashed #d0d5dd; margin: 14px 40px; }
   .summary { font-size: 13px; color: #475467; padding: 0 40px 14px; }
@@ -131,7 +151,7 @@ function buildItineraryHtml({ slots, outboundFlight, returnFlight, hotel, combo,
       <tr><td>Minimum local spend estimate</td><td style="text-align:right">${formatINR(combo.minimumLocalSpend)}</td></tr>
       ${combo.minimumLocalSpendPerLocation && Object.keys(combo.minimumLocalSpendPerLocation).length ? `
         ${Object.entries(combo.minimumLocalSpendPerLocation)
-          .map(([location, amount]) => `<tr><td>Local spend for ${location}</td><td style="text-align:right">${formatINR(amount)}</td></tr>`)
+          .map(([location, amount]) => `<tr><td>Local spend for ${location}</td><td style="text-align:right">${formatINR(Number(amount) || 0)}</td></tr>`)
           .join("\n        ")}
       ` : ""}
       <tr class="total-row"><td>Total with minimum spend</td><td style="text-align:right">${formatINR(combo.totalWithMinimumSpend)}</td></tr>
@@ -147,5 +167,3 @@ function buildItineraryHtml({ slots, outboundFlight, returnFlight, hotel, combo,
 </body>
 </html>`;
 }
-
-module.exports = { buildItineraryHtml };

@@ -1,11 +1,11 @@
-const { getCityHotels, searchHotels } = require("./plumtripsClient");
+import { getCityHotels, searchHotels } from "./plumtripsClient.js";
 
 const MAX_HOTEL_CODES_PER_SEARCH = 50;
-const SEARCH_BATCH_CONCURRENCY = 5; // how many batches to fire in parallel
-const MAX_HOTEL_BATCHES_TO_RUN = 6; // cap hotel pricing requests so itinerary finishes quickly
+const SEARCH_BATCH_CONCURRENCY = 5;
+const MAX_HOTEL_BATCHES_TO_RUN = 6;
 const MAX_HOTEL_CODES_TO_SEARCH = MAX_HOTEL_CODES_PER_SEARCH * MAX_HOTEL_BATCHES_TO_RUN;
 
-const STAR_MAP = {
+const STAR_MAP: Record<string, number | null> = {
   OneStar: 1,
   TwoStar: 2,
   ThreeStar: 3,
@@ -14,21 +14,20 @@ const STAR_MAP = {
   All: null,
 };
 
-function toStarRating(hotelRatingStr) {
+function toStarRating(hotelRatingStr: string | null | undefined): number | null {
   if (!hotelRatingStr) return null;
   return STAR_MAP[hotelRatingStr] ?? null;
 }
 
-function chunk(arr, size) {
-  const out = [];
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) {
     out.push(arr.slice(i, i + size));
   }
   return out;
 }
 
-/** PlumTrips hotel search wants plain YYYY-MM-DD, not a full datetime. */
-function toHotelDate(dateInput) {
+function toHotelDate(dateInput: string | Date): string {
   const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
   if (Number.isNaN(d.getTime())) {
     throw new Error(`Invalid date passed to toHotelDate: ${dateInput}`);
@@ -39,25 +38,23 @@ function toHotelDate(dateInput) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function nightsBetween(checkIn, checkOut) {
+function nightsBetween(checkIn: string, checkOut: string): number {
   const d1 = new Date(checkIn);
   const d2 = new Date(checkOut);
-  return Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)));
+  return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
 }
 
-/** Pick the lowest TotalFare room from a HotelResult's Rooms[] */
-function pickCheapestRoom(rooms) {
+function pickCheapestRoom(rooms: any[]): any {
   if (!Array.isArray(rooms) || rooms.length === 0) return null;
-  return rooms.reduce((cheapest, room) => {
+  return rooms.reduce((cheapest: any, room: any) => {
     const fare = Number(room?.TotalFare) || Infinity;
     const cheapestFare = cheapest ? Number(cheapest.TotalFare) || Infinity : Infinity;
     return fare < cheapestFare ? room : cheapest;
   }, null);
 }
 
-/** Build a lookup map of HotelCode -> static metadata (name, rating, address, geo) */
-function buildHotelMetaMap(hotelsList) {
-  const map = new Map();
+function buildHotelMetaMap(hotelsList: any[]) {
+  const map = new Map<string, any>();
   for (const h of hotelsList) {
     const code = h?.HotelCode;
     if (!code) continue;
@@ -76,8 +73,7 @@ function buildHotelMetaMap(hotelsList) {
   return map;
 }
 
-/** Merge one HotelResult entry (pricing) with its static metadata */
-function normalizeHotel(hotelResult, metaMap, nights) {
+function normalizeHotel(hotelResult: any, metaMap: Map<string, any>, nights: number) {
   const code = String(hotelResult?.HotelCode || "");
   const meta = metaMap.get(code) || {
     hotelCode: code,
@@ -109,12 +105,12 @@ function normalizeHotel(hotelResult, metaMap, nights) {
     inclusions: cheapestRoom.Inclusion || "",
     promotions: cheapestRoom.RoomPromotion || [],
     bookingCode: cheapestRoom.BookingCode,
-    image: null, // not provided by this API
+    image: null,
     raw: hotelResult,
   };
 }
 
-function assertSearchParams(p) {
+function assertSearchParams(p: Record<string, unknown>) {
   const required = ["checkIn", "checkOut", "hotelCodes"];
   const missing = required.filter((k) => !p[k]);
   if (missing.length) {
@@ -122,46 +118,29 @@ function assertSearchParams(p) {
   }
 }
 
-/** Run searchHotels in batches of MAX_HOTEL_CODES_PER_SEARCH, with limited concurrency */
-async function searchHotelsBatched(hotelCodes, searchParams) {
+async function searchHotelsBatched(hotelCodes: string[], searchParams: Record<string, unknown>) {
   const batches = chunk(hotelCodes, MAX_HOTEL_CODES_PER_SEARCH);
   const limitedBatches = batches.slice(0, MAX_HOTEL_BATCHES_TO_RUN);
-  console.log(
-    `[hotelService] searchHotelsBatched hotelCodes=${hotelCodes.length} batches=${batches.length} limitedBatches=${limitedBatches.length} concurrency=${SEARCH_BATCH_CONCURRENCY}`
-  );
-  const allResults = [];
+  const allResults: any[] = [];
 
   for (let i = 0; i < limitedBatches.length; i += SEARCH_BATCH_CONCURRENCY) {
     const group = limitedBatches.slice(i, i + SEARCH_BATCH_CONCURRENCY);
-    console.log(
-      `[hotelService] processing batch group ${i}-${i + group.length - 1} (${group.length} batches)`
-    );
     const groupResponses = await Promise.all(
-      group.map((codes) => {
+      group.map(async (codes) => {
         const params = { ...searchParams, hotelCodes: codes.join(",") };
+        assertSearchParams(params);
         try {
-          assertSearchParams(params);
-        } catch (e) {
-          console.error("searchHotels param check failed:", e.message);
-          return Promise.resolve(null);
-        }
-        return searchHotels(params).catch((err) => {
-          console.error(
-            "searchHotels batch failed:",
-            err?.response?.status,
-            JSON.stringify(err?.response?.data)
-          );
+          return await searchHotels(params);
+        } catch (err) {
+          console.error("searchHotels batch failed:", err);
           return null;
-        });
+        }
       })
     );
 
     for (const resp of groupResponses) {
       const hotelResults =
-        resp?.data?.HotelResult ||
-        resp?.HotelResult ||
-        resp?.data?.Response?.HotelResult ||
-        [];
+        resp?.data?.HotelResult || resp?.HotelResult || resp?.data?.Response?.HotelResult || [];
       if (Array.isArray(hotelResults)) {
         allResults.push(...hotelResults);
       }
@@ -171,12 +150,7 @@ async function searchHotelsBatched(hotelCodes, searchParams) {
   return allResults;
 }
 
-/**
- * Given a city code, fetch the hotel list for that city, price them for the
- * requested stay (batched in groups of 50 hotel codes), and return the
- * cheapest N normalized hotels.
- */
-async function getCheapestHotels({
+export async function getCheapestHotels({
   cityCode,
   checkIn,
   checkOut,
@@ -184,28 +158,23 @@ async function getCheapestHotels({
   adults = 2,
   nationality = "IN",
   topN = 10,
-}) {
-  console.log(
-    `[hotelService] getCheapestHotels cityCode=${cityCode} checkIn=${checkIn} checkOut=${checkOut} rooms=${rooms} adults=${adults}`
-  );
+}: {
+  cityCode: string;
+  checkIn: string;
+  checkOut: string;
+  rooms?: number;
+  adults?: number;
+  nationality?: string;
+  topN?: number;
+}): Promise<any[]> {
   const cityHotelsResp = await getCityHotels(cityCode);
   const hotelsList = cityHotelsResp?.data?.Hotels || cityHotelsResp?.Hotels || [];
-  console.log(
-    `[hotelService] getCityHotels returned hotelsList=${Array.isArray(hotelsList) ? hotelsList.length : typeof hotelsList}`
-  );
-
   if (!Array.isArray(hotelsList) || hotelsList.length === 0) return [];
 
-  const hotelCodes = hotelsList.map((h) => h.HotelCode).filter(Boolean);
+  const hotelCodes = hotelsList.map((h: any) => h.HotelCode).filter(Boolean);
   if (hotelCodes.length === 0) return [];
 
   const cappedHotelCodes = hotelCodes.slice(0, MAX_HOTEL_CODES_TO_SEARCH);
-  if (cappedHotelCodes.length < hotelCodes.length) {
-    console.log(
-      `[hotelService] limiting hotelCodes from ${hotelCodes.length} to ${cappedHotelCodes.length} to avoid long batch processing`
-    );
-  }
-
   const metaMap = buildHotelMetaMap(hotelsList);
   const hotelResults = await searchHotelsBatched(cappedHotelCodes, {
     checkIn: toHotelDate(checkIn),
@@ -221,17 +190,8 @@ async function getCheapestHotels({
     .map((h) => normalizeHotel(h, metaMap, nights))
     .filter((h) => h && h.totalPrice > 0);
 
-  normalized.sort((a, b) => a.totalPrice - b.totalPrice);
-
+  normalized.sort((a: any, b: any) => a.totalPrice - b.totalPrice);
   return normalized.slice(0, topN);
 }
 
-module.exports = {
-  getCheapestHotels,
-  normalizeHotel,
-  buildHotelMetaMap,
-  pickCheapestRoom,
-  nightsBetween,
-  toStarRating,
-  toHotelDate,
-};
+export { toHotelDate, nightsBetween, toStarRating };

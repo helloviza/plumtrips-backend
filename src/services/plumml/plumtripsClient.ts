@@ -1,21 +1,14 @@
-const axios = require("axios");
-const config = require("../config/config");
+import axios from "axios";
+import { plannerConfig } from "../../config/planner.js";
 
-/**
- * Thin wrapper around PlumTrips REST endpoints.
- * If PlumTrips requires auth, add the header below (Authorization / x-api-key)
- * once you know the exact scheme they expect.
- */
 const client = axios.create({
-  baseURL: config.plumtrips.baseUrl,
+  baseURL: plannerConfig.plumtrips.baseUrl,
   timeout: 70000,
   headers: {
     "Content-Type": "application/json",
   },
 });
 
-// Log full request + response detail on any failure so 400s are debuggable
-// instead of showing up only as "Request failed with status code 400".
 client.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -29,30 +22,24 @@ client.interceptors.response.use(
   }
 );
 
-async function searchFlights(payload) {
-  // payload example:
-  // { origin, destination, departDate, cabinClass, adults, children, infants, nonStopOnly, fareType, tripType }
+export async function searchFlights(payload: unknown): Promise<any> {
   const { data } = await client.post("/flights/tbo/search", payload);
   return data;
 }
 
-async function getCityHotels(cityCode) {
+export async function getCityHotels(cityCode: string): Promise<any> {
   const { data } = await client.post("/hotels/city-hotels", { cityCode });
   return data;
 }
 
-async function searchHotelCities(query, countryCode) {
+export async function searchHotelCities(query: string, countryCode?: string): Promise<any> {
   const params = new URLSearchParams({ query: String(query || "").trim() });
   if (countryCode) params.set("countryCode", String(countryCode).trim().toUpperCase());
   const { data } = await client.get(`/hotels/cities?${params.toString()}`);
   return data;
 }
 
-async function searchHotels(payload) {
-  // payload example (SHAPE UNCONFIRMED — adjust once real 400 body is seen):
-  // { hotelCodes, checkIn, checkOut, rooms, adults, nationality }
+export async function searchHotels(payload: unknown): Promise<any> {
   const { data } = await client.post("/hotels/search", payload);
   return data;
 }
-
-module.exports = { searchFlights, getCityHotels, searchHotels, searchHotelCities };

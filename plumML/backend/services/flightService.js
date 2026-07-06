@@ -113,9 +113,12 @@ function getSingleFare(rawData, { index, resultIndex } = {}) {
  * IMPORTANT: this MUST keep returning an array — tripPipeline.js and other
  * callers depend on that contract.
  */
-async function getCheapestFlights({ origin, destination, departDate, adults, children = 0, cabinClass = 2, nonStopOnly = false, topN = 10 }) {
+async function getCheapestFlights({ origin, destination, departDate, returnDate, adults, children = 0, cabinClass = 2, nonStopOnly = false, topN = 10 }) {
   if (typeof departDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(departDate)) {
     throw new Error("Invalid departDate. Expected format 'yyyy-MM-dd'.");
+  }
+  if (returnDate && typeof returnDate !== "string") {
+    throw new Error("Invalid returnDate. Expected format 'yyyy-MM-dd'.");
   }
 
   const payload = {
@@ -128,7 +131,8 @@ async function getCheapestFlights({ origin, destination, departDate, adults, chi
     infants: 0,
     nonStopOnly,
     fareType: "Regular",
-    tripType: "oneWay",
+    tripType: returnDate ? "roundTrip" : "oneWay",
+    ...(returnDate ? { returnDate } : {}),
   };
 
   console.log("[flightService] searchFlights payload:", JSON.stringify(payload, null, 2));
