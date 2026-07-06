@@ -4,6 +4,7 @@ import express from "express";
 import cors, { type CorsOptions } from "cors";
 import morgan from "morgan";
 import http from "http";
+import path from "path";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 
@@ -19,6 +20,7 @@ import bridgeRoutes from "./routes/bridge.js"; // ⬅️ NEW: serves /bridge and
 import authMarket from "./routes/authMarket.js";
 import marketPanel from "./routes/market_panel/index.js";
 import inquiryRoutes from "./routes/inquiry.js";
+import plummlRoutes from "./routes/plumml.js";
 
 //
 
@@ -47,12 +49,16 @@ const SOCK_TIMEOUT_MS = Number(process.env.SOCKET_TIMEOUT_MS || 180_000);
 
 app.set("trust proxy", 1);
 app.set("etag", false);
+app.use("/generated", express.static(path.join(process.cwd(), "public", "generated")));
 
 // ---------- Security + CORS ----------
 const corsOpts: CorsOptions = {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true); // allow curl/health and mobile WebView w/ no Origin
     if (FRONTEND_LIST.includes(origin)) return cb(null, true);
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return cb(null, true);
+    }
     return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
@@ -121,6 +127,7 @@ app.use("/api/v1/payments", paymentsRouter);
 app.use("/api/v1/inquiries", inquiryRoutes);
 
 app.use("/api/v1/sso", ssoRoutes);
+app.use("/api/v1/plumml", plummlRoutes);
 
 // ⬇️ NEW: Mount the HTML bridge endpoints at the ROOT (not under /api)
 // This provides:  GET /bridge         (posts {type:'me', payload} to RN WebView)
