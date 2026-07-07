@@ -2,7 +2,8 @@ import Razorpay from "razorpay";
 import crypto from "crypto";
 
 const MIN_AMOUNT_INR = 1;
-const MAX_AMOUNT_INR = 5_000_000;
+// Razorpay test mode cap is ₹5,00,000. Production supports up to ₹50,00,000.
+const MAX_AMOUNT_INR = 500_000;
 const DEFAULT_CURRENCY = "INR";
 
 export class RazorpayConfigError extends Error {
@@ -70,7 +71,10 @@ function validateAmountInr(amountInr: number): void {
     throw new RazorpayValidationError(`amount must be at least ₹${MIN_AMOUNT_INR}`);
   }
   if (amountInr > MAX_AMOUNT_INR) {
-    throw new RazorpayValidationError(`amount must not exceed ₹${MAX_AMOUNT_INR}`);
+    throw new RazorpayValidationError(
+      `Amount ₹${amountInr.toLocaleString("en-IN")} exceeds Razorpay test mode limit of ₹${MAX_AMOUNT_INR.toLocaleString("en-IN")}. ` +
+      `Switch to a Razorpay live key or split the payment to proceed.`
+    );
   }
 }
 

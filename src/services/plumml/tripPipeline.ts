@@ -101,6 +101,7 @@ export async function runTripPipeline(slots: any, sessionId: string) {
     itinerary,
     combo,
     flight: combo.outboundFlight,
+    outboundFlight: combo.outboundFlight,
     returnFlight: combo.returnFlight,
     hotel: combo.hotel,
     pdfUrl: `/generated/${fileName}`,

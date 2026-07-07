@@ -1,11 +1,11 @@
 import "dotenv/config";
 
 export const plannerConfig = {
-  port: Number(process.env.PORT || 5000),
+  port: Number(process.env.PORT || 8080),
   publicBaseUrl:
     process.env.PUBLIC_BASE_URL ||
     process.env.BACKEND_PUBLIC_URL ||
-    `http://localhost:${process.env.PORT || 5000}`,
+    `http://localhost:${process.env.PORT || 8080}`,
 
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || "",
