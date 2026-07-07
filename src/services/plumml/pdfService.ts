@@ -40,7 +40,7 @@ export async function generateItineraryPdf(payload: PdfPayload): Promise<{ fileP
       });
     })
   );
-});
+});  
 
 
     const fileName = `itinerary-${payload.sessionId}-${Date.now()}.pdf`;
