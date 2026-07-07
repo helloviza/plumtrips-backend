@@ -28,7 +28,20 @@ export async function generateItineraryPdf(payload: PdfPayload): Promise<{ fileP
 
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.setContent(html, { waitUntil: "domcontentloaded"  });
+    await page.evaluate(async () => {
+  const selectors = Array.from(document.images);
+  await Promise.all(
+    selectors.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return new Promise((resolve) => {
+        img.addEventListener("load", resolve);
+        img.addEventListener("error", resolve); // don't hang forever on a broken image
+      });
+    })
+  );
+});
+
 
     const fileName = `itinerary-${payload.sessionId}-${Date.now()}.pdf`;
     const filePath = path.join(OUTPUT_DIR, fileName);
