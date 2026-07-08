@@ -86,7 +86,7 @@ export async function runTripPipeline(slots: any, sessionId: string) {
     }, {});
   combo.totalWithMinimumSpend = combo.total + minimumLocalSpend;
 
-  const { fileName } = await generateItineraryPdf({
+  const pdfResult = await generateItineraryPdf({
     slots,
     outboundFlight: combo.outboundFlight,
     returnFlight: combo.returnFlight,
@@ -104,6 +104,6 @@ export async function runTripPipeline(slots: any, sessionId: string) {
     outboundFlight: combo.outboundFlight,
     returnFlight: combo.returnFlight,
     hotel: combo.hotel,
-    pdfUrl: `/generated/${fileName}`,
+    pdfUrl: pdfResult ? `/generated/${pdfResult.fileName}` : undefined,
   };
 }

@@ -16,32 +16,32 @@ export type PdfPayload = {
   sessionId: string;
 };
 
-export async function generateItineraryPdf(payload: PdfPayload): Promise<{ filePath: string; fileName: string }> {
+export async function generateItineraryPdf(payload: PdfPayload): Promise<{ filePath: string; fileName: string } | null> {
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
   const html = buildItineraryHtml(payload);
-
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 
   try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "domcontentloaded"  });
-    await page.evaluate(async () => {
-  const selectors = Array.from(document.images);
-  await Promise.all(
-    selectors.map((img) => {
-      if (img.complete) return Promise.resolve();
-      return new Promise((resolve) => {
-        img.addEventListener("load", resolve);
-        img.addEventListener("error", resolve); // don't hang forever on a broken image
-      });
-    })
-  );
-});  
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
 
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "domcontentloaded" });
+    await page.evaluate(async () => {
+      const selectors = Array.from(document.images);
+      await Promise.all(
+        selectors.map((img) => {
+          if (img.complete) return Promise.resolve();
+          return new Promise((resolve) => {
+            img.addEventListener("load", resolve);
+            img.addEventListener("error", resolve);
+          });
+        })
+      );
+    });
 
     const fileName = `itinerary-${payload.sessionId}-${Date.now()}.pdf`;
     const filePath = path.join(OUTPUT_DIR, fileName);
@@ -54,7 +54,12 @@ export async function generateItineraryPdf(payload: PdfPayload): Promise<{ fileP
     });
 
     return { filePath, fileName };
+  } catch (error) {
+    console.error("[pdfService] Failed to generate itinerary PDF", error);
+    return null;
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
   }
 }

@@ -30,7 +30,7 @@ router.post("/chat", async (req, res) => {
 
     const result = await runTripPipeline(session.slots, sessionId);
     const baseUrl = `${req.protocol}://${req.get("host")}`;
-    const pdfUrl = `${baseUrl}${result.pdfUrl}`;
+    const pdfUrl = result.pdfUrl ? `${baseUrl}${result.pdfUrl}` : undefined;
     session.result = { ...result, pdfUrl };
 
     return res.json({
@@ -85,7 +85,7 @@ router.post("/generate-trip", async (req, res) => {
 
     const result = await runTripPipeline(session.slots, sessionId);
     const baseUrl = `${req.protocol}://${req.get("host")}`;
-    const pdfUrl = `${baseUrl}${result.pdfUrl}`;
+    const pdfUrl = result.pdfUrl ? `${baseUrl}${result.pdfUrl}` : undefined;
     session.result = { ...result, pdfUrl };
 
     res.json({
