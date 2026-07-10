@@ -7,6 +7,12 @@ const COOKIE_NAME = process.env.COOKIE_NAME || "pt_auth";
 
 export type JwtPayload = { id: string; email: string; fullName?: string };
 
+// Typed alternative to `(req as any).user` — controllers can import this
+// instead of re-declaring the same shape in every file.
+export interface AuthenticatedRequest extends Request {
+  user?: JwtPayload;
+}
+
 export function issueJwt(payload: JwtPayload) {
   // TS now sees (payload, secret: Secret, options: SignOptions)
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES });
@@ -44,6 +50,6 @@ export function authRequired(req: Request, res: Response, next: NextFunction) {
   if (!token) return res.status(401).json({ error: "Unauthorized" });
   const payload = verifyJwt(token);
   if (!payload) return res.status(401).json({ error: "Unauthorized" });
-  (req as any).user = payload;
+  (req as AuthenticatedRequest).user = payload;
   next();
 }

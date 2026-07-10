@@ -21,6 +21,7 @@ import authMarket from "./routes/authMarket.js";
 import marketPanel from "./routes/market_panel/index.js";
 import inquiryRoutes from "./routes/inquiry.js";
 import plummlRoutes from "./routes/plumml.js";
+import couponRoutes from "./routes/couponRoutes.js";
 
 //
 
@@ -125,7 +126,7 @@ app.use("/api/v1/flights", flightsRouter);
 app.use("/api/v1/hotels", hotelsRouter);
 app.use("/api/v1/payments", paymentsRouter);
 app.use("/api/v1/inquiries", inquiryRoutes);
-
+app.use("/api/v1/coupons", couponRoutes);
 app.use("/api/v1/sso", ssoRoutes);
 app.use("/api/v1/plumml", plummlRoutes);
 
