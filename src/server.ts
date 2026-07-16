@@ -22,6 +22,7 @@ import marketPanel from "./routes/market_panel/index.js";
 import inquiryRoutes from "./routes/inquiry.js";
 import plummlRoutes from "./routes/plumml.js";
 import couponRoutes from "./routes/couponRoutes.js";
+import mailer from "./routes/routesMail.js";
 
 //
 
@@ -129,6 +130,10 @@ app.use("/api/v1/inquiries", inquiryRoutes);
 app.use("/api/v1/coupons", couponRoutes);
 app.use("/api/v1/sso", ssoRoutes);
 app.use("/api/v1/plumml", plummlRoutes);
+app.use("/api/v1/email",mailer);
+
+
+
 
 // ⬇️ NEW: Mount the HTML bridge endpoints at the ROOT (not under /api)
 // This provides:  GET /bridge         (posts {type:'me', payload} to RN WebView)

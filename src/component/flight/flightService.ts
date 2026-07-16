@@ -1,8 +1,8 @@
-import {isMultiCityTrip,rawFareQuote,rawFareRule,rawPriceRBD,rawCancellation} from "./utilsFlight.js";
+import {isMultiCityTrip,rawFareQuote,rawFareRule,rawPriceRBD,rawCancellation,rawCancellationSend} from "./utilsFlight.js";
 import {searchMultiCityAsOneWay, searchFlights,} from "./flightSearch.js";
 import { authenticate} from "../../services/tbo/auth.service.js";
 import { httpFlight } from "../../lib/http.js";
-import type {FareQuoteParams, FareRuleParams, SSRParams,CancellationParams} from "./utilsFlight.js";
+import type {FareQuoteParams, FareRuleParams, SSRParams,CancellationParams,CancellationParamsSend} from "./utilsFlight.js";
 import type {PriceRBDParams} from "./flightComponent.js";
 
 
@@ -156,4 +156,34 @@ export async function cancelPNR(params: CancellationParams) {
     throw new Error("source is required");
   }
   return rawCancellation(params);
+}
+
+
+export async function cancelPNRSend(params: CancellationParamsSend) {
+  if (!params.bookingId) {
+    throw new Error("bookingId is required");
+  }
+  if (params.requestType === undefined || params.requestType === null) {
+    throw new Error("requestType is required");
+  }
+  if (params.cancellationType === undefined || params.cancellationType === null) {
+    throw new Error("cancellationType is required");
+  }
+  if (!params.ticketId) {
+    throw new Error("ticketId is required");
+  }
+  if (!params.remarks || !params.remarks.trim()) {
+    throw new Error("remarks is required");
+  }
+  // Origin/Destination are only mandatory for PartialCancellation (2).
+  if (params.requestType === 2) {
+    if (!params.sectors || params.sectors.length === 0) {
+      throw new Error("origin and destination are required for a partial cancellation");
+    }
+    const badSector = params.sectors.find((s) => !s.origin || !s.destination);
+    if (badSector) {
+      throw new Error("each sector must have both origin and destination for a partial cancellation");
+    }
+  }
+  return rawCancellationSend(params);
 }

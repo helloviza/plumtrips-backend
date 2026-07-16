@@ -189,3 +189,39 @@ export async function rawCancellation(params: CancellationParams) {
   assertNoTBOError(data?.Response?.Error, "ReleasePNRRequest");
   return data;
 }
+
+
+export type CancellationParamsSend = {
+  bookingId:        number;
+  requestType:      number;   // RequestType enum: 0-3
+  cancellationType: number;   // CancellationType enum: 0-3
+  sectors?:         { origin: string; destination: string }[];
+  ticketId:         string;
+  remarks:          string;
+};
+
+
+export async function rawCancellationSend(params: CancellationParamsSend) {
+  const body = await withAuth({
+    BookingId:        Number(params.bookingId),        // ✅ PascalCase
+    RequestType:      params.requestType,               // ✅ PascalCase
+    CancellationType: params.cancellationType,           // ✅ PascalCase
+    Sectors: params.sectors?.map((s) => ({
+      Origin:      s.origin,
+      Destination: s.destination,
+    })),                                                 // ✅ PascalCase, only present for partial cancellation
+    TicketId: params.ticketId,                            // ✅ PascalCase
+    Remarks:  params.remarks,                             // ✅ PascalCase
+  });
+
+  console.log("[rawCancellationSend] Request body:", JSON.stringify(body, null, 2));
+
+  const { data } = await httpFlight.post("/SendChangeRequest", body, {
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+  });
+
+  console.log("[rawCancellationSend] TBO response:", JSON.stringify(data, null, 2));
+
+  assertNoTBOError(data?.Response?.Error, "SendChangeRequest");
+  return data;
+}

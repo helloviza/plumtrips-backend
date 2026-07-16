@@ -19,7 +19,7 @@ import { bookFlight,ticketFlight } from "../../component/flight/flightBookTicket
 import { 
   getFareRule,
   getFareQuote,
-  getSSR,cancelPNR} from "../../component/flight/flightService.js";
+  getSSR,cancelPNR,cancelPNRSend} from "../../component/flight/flightService.js";
 
 
 
@@ -564,6 +564,99 @@ r.post("/tbo/CancelPNR", async (req, res) => {
     res.status(400).json(fail(errMsg));
   }
 });
+
+
+
+
+enum RequestType {
+  NotSet              = 0,
+  FullCancellation    = 1,
+  PartialCancellation = 2,
+  Reissuance          = 3,
+}
+ 
+enum CancellationType {
+  NotSet          = 0,
+  NoShow          = 1,
+  FlightCancelled = 2,
+  Others          = 3,
+}
+ 
+r.post("/tbo/SendCancellationRequest", async (req, res) => {
+  try {
+    const {
+      bookingId,
+      requestType,       // 0-3, see RequestType enum above
+      cancellationType,  // 0-3, see CancellationType enum above
+      origin,            // mandatory only when requestType === PartialCancellation
+      destination,       // mandatory only when requestType === PartialCancellation
+      ticketId,          // integer, or comma-separated string of ticket ids
+      remarks,
+    } = req.body;
+ 
+    // ── Mandatory field checks (per TBO spec) ─────────────────
+    if (!bookingId) {
+      return res.status(400).json(fail("bookingId is required"));
+    }
+    if (requestType === undefined || requestType === null || requestType === "") {
+      return res.status(400).json(fail("requestType is required"));
+    }
+    if (cancellationType === undefined || cancellationType === null || cancellationType === "") {
+      return res.status(400).json(fail("cancellationType is required"));
+    }
+    if (!ticketId) {
+      return res.status(400).json(fail("ticketId is required"));
+    }
+    if (!remarks || String(remarks).trim() === "") {
+      return res.status(400).json(fail("remarks is required"));
+    }
+ 
+    const requestTypeNum      = Number(requestType);
+    const cancellationTypeNum = Number(cancellationType);
+ 
+    if (!(requestTypeNum in RequestType)) {
+      return res.status(400).json(fail("requestType must be 0 (NotSet), 1 (FullCancellation), 2 (PartialCancellation), or 3 (Reissuance)"));
+    }
+    if (!(cancellationTypeNum in CancellationType)) {
+      return res.status(400).json(fail("cancellationType must be 0 (NotSet), 1 (NoShow), 2 (FlightCancelled), or 3 (Others)"));
+    }
+ 
+    // Origin/Destination are only mandatory for PartialCancellation.
+    if (requestTypeNum === RequestType.PartialCancellation) {
+      if (!origin)      return res.status(400).json(fail("origin is required for partial cancellation"));
+      if (!destination) return res.status(400).json(fail("destination is required for partial cancellation"));
+    }
+ 
+    console.log("[/tbo/SendCancellationRequest] Incoming:", {
+      bookingId, requestType: requestTypeNum, cancellationType: cancellationTypeNum,
+      origin, destination, ticketId, remarks,
+    });
+ 
+    // NOTE: EndUserIp and TokenId are NOT accepted from the client body —
+    // they're injected server-side (EndUserIp from req.ip / a trusted
+    // header, TokenId from your existing TBO auth/session cache) the same
+    // way your other TBO routes (search, fare-quote, ticket) already do.
+    // If cancelPNR() doesn't already do this internally, wire it there
+    // rather than trusting a client-supplied TokenId/EndUserIp.
+    const data = await cancelPNRSend({
+      bookingId:        Number(bookingId),
+      requestType:      requestTypeNum,
+      cancellationType: cancellationTypeNum,
+      sectors: (origin && destination)
+        ? [{ origin: String(origin).toUpperCase(), destination: String(destination).toUpperCase() }]
+        : undefined,
+      ticketId: String(ticketId), // supports comma-separated multiple ids
+      remarks:  String(remarks),
+    });
+ 
+    res.json(ok(data));
+  } catch (e: any) {
+    const errMsg = axiosMessage(e);
+    console.error("[/tbo/SendCancellationRequest] Error:", errMsg);
+    res.status(400).json(fail(errMsg));
+  }
+});
+ 
 
 
 export default r;
