@@ -3,7 +3,7 @@
 // Based on TBO API Specification (Book + Ticket endpoints)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { httpFlight } from "../../lib/http.js";
+import { httpBookFlight } from "../../lib/http.js";
 import {authenticate} from "../../services/tbo/auth.service.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ export async function bookFlight(input: BookInput): Promise<BookResponse> {
     Passengers:  input.passengers,
   };
 
-  const { data } = await httpFlight.post("/Book", body, {
+  const { data } = await httpBookFlight.post("/Book", body, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
   });
 
@@ -378,7 +378,7 @@ export async function ticketFlight(
 
   let data: any;
   try {
-    const res = await httpFlight.post("/Ticket", body, {
+    const res = await httpBookFlight.post("/Ticket", body, {
       headers: { "Content-Type": "application/json", Accept: "application/json" },
     });
     data = res.data;

@@ -14,6 +14,12 @@ export const FLIGHT_BASE =
   "https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest";
 
 
+export const FLIGHT_BASE_BOOKING =
+    process.env.TBO_FLIGHT_BOOKING_BASE_URL ||
+    "https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest";
+
+
+
 
 /** Hotel Search / PreBook / GetBookingDetails / Cancel — affiliate HotelAPI (typical) */
 export const HOTEL_BASE =
@@ -49,6 +55,12 @@ export const httpShared = axios.create({
 
 export const httpFlight = axios.create({
   baseURL: FLIGHT_BASE,
+  headers: { "Content-Type": "application/json", Accept: "application/json" },
+  timeout: TIMEOUT,
+});
+
+export const httpBookFlight = axios.create({
+  baseURL: FLIGHT_BASE_BOOKING,
   headers: { "Content-Type": "application/json", Accept: "application/json" },
   timeout: TIMEOUT,
 });
