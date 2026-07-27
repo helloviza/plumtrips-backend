@@ -206,7 +206,7 @@ export async function rawCancellationSend(params: CancellationParamsSend) {
     BookingId:        Number(params.bookingId),        // ✅ PascalCase
     RequestType:      params.requestType,               // ✅ PascalCase
     CancellationType: params.cancellationType,           // ✅ PascalCase
-    Sectors: params.sectors?.map((s) => ({
+    sectors: params.sectors?.map((s) => ({
       Origin:      s.origin,
       Destination: s.destination,
     })),                                                 // ✅ PascalCase, only present for partial cancellation
