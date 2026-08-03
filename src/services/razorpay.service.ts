@@ -1,10 +1,11 @@
 import Razorpay from "razorpay";
 import crypto from "crypto";
 
-const MIN_AMOUNT_INR = 1;
-// Razorpay test mode cap is ₹5,00,000. Production supports up to ₹50,00,000.
-const MAX_AMOUNT_INR = 500_000;
-const DEFAULT_CURRENCY = "INR";
+import {DEFAULT_CURRENCY } from "./razorpay_const.js";
+import type { HotelPaymentOrderInput, VerifyPaymentInput, FlightPaymentOrderInput } from "../models/razorpay.model.js";
+import { readCredentials, getClient } from "../utils/razorpay_payment.js";
+import { validateAmountInr,buildFlightReceipt,buildHotelReceipt, sanitizeNote } from "../utils/razorpay_payment.js";
+
 
 export class RazorpayConfigError extends Error {
   readonly code = "RAZORPAY_NOT_CONFIGURED";
@@ -26,37 +27,6 @@ export class RazorpayValidationError extends Error {
   }
 }
 
-export type HotelPaymentOrderInput = {
-  amountInr: number;
-  currency?: string;
-  bookingCode: string;
-  traceId: string;
-  hotelName?: string;
-};
-
-export type VerifyPaymentInput = {
-  razorpay_order_id: string;
-  razorpay_payment_id: string;
-  razorpay_signature: string;
-};
-
-function readCredentials(): { keyId: string; keySecret: string } {
-  const keyId = process.env.RAZORPAY_KEY_ID?.trim();
-  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
-  if (!keyId || !keySecret) {
-    throw new RazorpayConfigError();
-  }
-  return { keyId, keySecret };
-}
-
-let razorpayClient: Razorpay | null = null;
-
-function getClient(): Razorpay {
-  if (razorpayClient) return razorpayClient;
-  const { keyId, keySecret } = readCredentials();
-  razorpayClient = new Razorpay({ key_id: keyId, key_secret: keySecret });
-  return razorpayClient;
-}
 
 export function getRazorpayKeyId(): string {
   return readCredentials().keyId;
@@ -66,41 +36,6 @@ export function assertRazorpayConfigured(): void {
   readCredentials();
 }
 
-function validateAmountInr(amountInr: number): void {
-  if (!Number.isFinite(amountInr) || amountInr < MIN_AMOUNT_INR) {
-    throw new RazorpayValidationError(`amount must be at least ₹${MIN_AMOUNT_INR}`);
-  }
-  if (amountInr > MAX_AMOUNT_INR) {
-    throw new RazorpayValidationError(
-      `Amount ₹${amountInr.toLocaleString("en-IN")} exceeds Razorpay test mode limit of ₹${MAX_AMOUNT_INR.toLocaleString("en-IN")}. ` +
-      `Switch to a Razorpay live key or split the payment to proceed.`
-    );
-  }
-}
-
-function sanitizeNote(value: string, maxLen = 256): string {
-  return value.trim().slice(0, maxLen);
-}
-
-function buildHotelReceipt(bookingCode: string): string {
-  const slug = bookingCode.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24);
-  return `hotel_${slug}_${Date.now()}`.slice(0, 40);
-}
-
-function buildFlightReceipt(bookingCode: string): string {
-  const slug = bookingCode.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24);
-  return `flight_${slug}_${Date.now()}`.slice(0, 40);
-}
-
-export type FlightPaymentOrderInput = {
-  amountInr: number;
-  currency?: string;
-  bookingCode: string;
-  traceId: string;
-  flightRoute: string;
-  flightDate?: string;
-  passengerCount?: number;
-};
 
 export async function createFlightPaymentOrder(input: FlightPaymentOrderInput) {
   validateAmountInr(input.amountInr);
@@ -136,6 +71,8 @@ export async function createFlightPaymentOrder(input: FlightPaymentOrderInput) {
   }
 
   const client = getClient();
+
+  // Create an Order in Server.
   const order = await client.orders.create({
     amount: amountPaise,
     currency,

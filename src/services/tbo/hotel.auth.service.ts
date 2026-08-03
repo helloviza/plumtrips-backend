@@ -33,8 +33,8 @@ export function getStaticAuthHeader(): string {
 
 export function getBookingCredentials() {
   return {
-    UserName: String(process.env.TBO_UserName || process.env.TBO_USERNAME || "").trim(),
-    Password: String(process.env.TBO_Password || process.env.TBO_PASSWORD || "").trim(),
+    UserName: String(process.env.TBO_Hotel_UserName || process.env.TBO_USERNAME || "").trim(),
+    Password: String(process.env.TBO_Hotel_Password || process.env.TBO_PASSWORD || "").trim(),
   };
 }
 
