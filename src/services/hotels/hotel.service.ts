@@ -79,59 +79,6 @@ function normalizeDateString(val: unknown): string | undefined {
   return undefined;
 }
 
-function parsePolicyDate(val: unknown): Date | undefined {
-  if (val == null || val === "") return undefined;
-  if (typeof val === "number" && Number.isFinite(val)) {
-    const date = new Date(val);
-    return Number.isNaN(date.getTime()) ? undefined : date;
-  }
-  if (typeof val !== "string") return undefined;
-
-  const raw = val.trim();
-  if (!raw) return undefined;
-
-  const isoMatch = raw.match(/^\s*(\d{4})[\/\-](\d{2})[\/\-](\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|([+\-])(\d{2}):?(\d{2}))?)?\s*$/);
-  if (isoMatch) {
-    const [, year, month, day, hour = "00", minute = "00", second = "00", tzSign, tzHour = "00", tzMin = "00"] = isoMatch;
-    if (tzSign) {
-      const isoString = `${year}-${month}-${day}T${hour}:${minute}:${second}${tzSign}${tzHour}:${tzMin}`;
-      const date = new Date(isoString);
-      return Number.isNaN(date.getTime()) ? undefined : date;
-    }
-    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
-  }
-
-  const altMatch = raw.match(/^\s*(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?\s*$/);
-  if (altMatch) {
-    const [, day, month, year, hour = "00", minute = "00", second = "00"] = altMatch;
-    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
-  }
-
-  const parsed = new Date(raw);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-}
-
-function formatPolicyDate(val: unknown): string | undefined {
-  const date = parsePolicyDate(val);
-  if (!date) return undefined;
-
-  const yyyy = String(date.getUTCFullYear());
-  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(date.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function addDaysToPolicyDate(val: unknown, days: number): string | undefined {
-  const date = parsePolicyDate(val);
-  if (!date) return undefined;
-
-  date.setUTCDate(date.getUTCDate() + days);
-  const yyyy = String(date.getUTCFullYear());
-  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(date.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 function coerceArray(raw: unknown): unknown[] {
   if (raw == null) return [];
   if (Array.isArray(raw)) return raw;
@@ -143,43 +90,30 @@ function normalizeCancellationPolicyItem(raw: unknown, defaultCurrency?: string)
   const item = raw as Record<string, unknown>;
 
   const charge = normalizeFiniteNumber(item.charge ?? item.Charge ?? item.CancellationCharge ?? item.cancellationCharge);
-
-  // ChargeType can be a string ("Fixed", "Percentage", "Night") or a number (0,1,2,3)
-  // Preserve the original string so the frontend can display it correctly.
-  const rawChargeType = item.chargeType ?? item.ChargeType ?? item.CancellationChargeType ?? item.cancellationType ?? item.CancellationType;
-  const chargeTypeStr = rawChargeType != null ? String(rawChargeType).trim() : undefined;
-  const chargeTypeNum = normalizeFiniteNumber(rawChargeType);
-
+  const chargeType = normalizeFiniteNumber(
+    item.chargeType ?? item.ChargeType ?? item.CancellationChargeType ?? item.cancellationType ?? item.CancellationType
+  );
   const currency = String(item.currency ?? item.Currency ?? item.CurrencyCode ?? defaultCurrency ?? "").trim() || undefined;
-  const fromDate = formatPolicyDate(
+  const fromDate = normalizeDateString(
     item.fromDate ?? item.FromDate ?? item.From ?? item.fromDateCutoff ?? item.CutoffFromDate
   );
-  const toDate = formatPolicyDate(
+  const toDate = normalizeDateString(
     item.toDate ?? item.ToDate ?? item.To ?? item.toDateCutoff ?? item.LastCancellationDate ?? item.FreeCancellationUntil ?? item.CutoffDate
   );
   const remarks = String(item.remarks ?? item.Remarks ?? item.Remark ?? item.CancellationPolicy ?? "").trim() || undefined;
 
-  if (charge === undefined && chargeTypeStr === undefined && !currency && !fromDate && !toDate && !remarks) return null;
+  if (charge === undefined && chargeType === undefined && !currency && !fromDate && !toDate && !remarks) return null;
 
   const normalized: Record<string, unknown> = {};
   if (charge !== undefined) {
     normalized.charge = charge;
     normalized.CancellationCharge = charge;
-    normalized.amount = charge;
   }
-  if (chargeTypeStr !== undefined) {
-    // Always keep the string form so frontend can display "Fixed" vs "Percentage"
-    normalized.chargeType = chargeTypeStr;
-    normalized.ChargeType = chargeTypeStr;
+  if (chargeType !== undefined) {
+    normalized.chargeType = chargeType;
+    normalized.ChargeType = chargeType;
   }
-  if (chargeTypeNum !== undefined) {
-    normalized.chargeTypeNum = chargeTypeNum;
-  }
-  if (currency) {
-    normalized.currency = currency;
-    normalized.Currency = currency;
-    normalized.currencyCode = currency;
-  }
+  if (currency) normalized.currency = currency;
   if (fromDate) {
     normalized.fromDate = fromDate;
     normalized.FromDate = fromDate;
@@ -197,12 +131,12 @@ function normalizeCancellationPolicyItem(raw: unknown, defaultCurrency?: string)
 
 function sortCancellationPolicies(policies: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   return policies.slice().sort((a, b) => {
-    const aDate = parsePolicyDate(a.fromDate ?? a.FromDate ?? a.toDate ?? a.ToDate ?? "");
-    const bDate = parsePolicyDate(b.fromDate ?? b.FromDate ?? b.toDate ?? b.ToDate ?? "");
-    if (!aDate && !bDate) return 0;
-    if (!aDate) return 1;
-    if (!bDate) return -1;
-    return aDate.getTime() - bDate.getTime();
+    const aDate = Date.parse(String(a.fromDate ?? a.FromDate ?? a.toDate ?? a.ToDate ?? ""));
+    const bDate = Date.parse(String(b.fromDate ?? b.FromDate ?? b.toDate ?? b.ToDate ?? ""));
+    if (Number.isNaN(aDate) && Number.isNaN(bDate)) return 0;
+    if (Number.isNaN(aDate)) return 1;
+    if (Number.isNaN(bDate)) return -1;
+    return aDate - bDate;
   });
 }
 
@@ -214,7 +148,7 @@ function normalizeRoomCancellationPolicies(room: Record<string, unknown>): void 
     .filter((item): item is Record<string, unknown> => item !== null);
 
   if (policies.length > 0) {
-    const sorted: Record<string, unknown>[] = sortCancellationPolicies(policies).map((item) => ({
+    const sorted = sortCancellationPolicies(policies).map((item) => ({
       ...item,
       amount: item.charge ?? item.CancellationCharge,
       currencyCode: item.currency ?? item.Currency ?? item.CurrencyCode,
@@ -226,51 +160,17 @@ function normalizeRoomCancellationPolicies(room: Record<string, unknown>): void 
 
     const freePolicy = sorted.find((item) => normalizeFiniteNumber(item.amount) === 0);
     if (freePolicy) {
-      const freeDeadline = String(
-        freePolicy.toDate ?? freePolicy.ToDate ?? freePolicy.fromDate ?? freePolicy.FromDate ?? freePolicy.From ?? ""
-      ).trim();
-      const canonicalDeadline = formatPolicyDate(freeDeadline);
-      if (canonicalDeadline) {
-        room.LastCancellationDate = canonicalDeadline;
-        room.FreeCancellationUntil = canonicalDeadline;
-
-        const hasPenalty = sorted.some((item) => normalizeFiniteNumber(item.amount) !== 0);
-        if (!hasPenalty) {
-          // TBO returns real charges — don't fabricate a penalty slab.
-          // The frontend will show "Cancellation charges apply after {date}"
-          // without a specific amount if none is present in the real data.
-        }
+      const cutoffDate = String((freePolicy as any).toDate ?? (freePolicy as any).ToDate ?? "").trim();
+      if (cutoffDate) {
+        room.LastCancellationDate = cutoffDate;
+        room.FreeCancellationUntil = cutoffDate;
       }
     }
-
-    if (!freePolicy) {
-      const earliestPenalty = sorted
-        .filter((item) => normalizeFiniteNumber(item.amount) !== 0)
-        .sort((a, b) => {
-          const aDate = parsePolicyDate(a.fromDate ?? a.FromDate ?? "");
-          const bDate = parsePolicyDate(b.fromDate ?? b.FromDate ?? "");
-          if (!aDate && !bDate) return 0;
-          if (!aDate) return 1;
-          if (!bDate) return -1;
-          return aDate.getTime() - bDate.getTime();
-        })[0] as Record<string, unknown> | undefined;
-
-      if (earliestPenalty) {
-        const penaltyFromDate = String(earliestPenalty.fromDate ?? earliestPenalty.FromDate ?? earliestPenalty.From ?? "").trim();
-        const penaltyCutoff = addDaysToPolicyDate(penaltyFromDate, -1);
-        if (penaltyCutoff) {
-          room.LastCancellationDate = penaltyCutoff;
-          room.FreeCancellationUntil = penaltyCutoff;
-        }
-      }
-    }
-
     return;
   }
 
-  const cutoff = normalizeDateString(room.LastCancellationDate ?? room.FreeCancellationUntil ?? room.LastCancellationDeadline ?? room.CutoffDate);
+  const cutoff = normalizeDateString(room.LastCancellationDate ?? room.FreeCancellationUntil ?? room.CutoffDate ?? room.LastCancellationDate);
   if (cutoff != null) {
-    const normalizedCutoff = formatPolicyDate(cutoff) ?? cutoff;
     const freePolicy: Record<string, unknown> = {
       charge: 0,
       CancellationCharge: 0,
@@ -279,8 +179,8 @@ function normalizeRoomCancellationPolicies(room: Record<string, unknown>): void 
       ChargeType: 0,
       currency,
       currencyCode: currency,
-      toDate: normalizedCutoff,
-      ToDate: normalizedCutoff,
+      toDate: cutoff,
+      ToDate: cutoff,
       remarks: "Free cancellation until this date",
       Remarks: "Free cancellation until this date",
       description: "Free cancellation until this date",
@@ -292,48 +192,36 @@ function normalizeRoomCancellationPolicies(room: Record<string, unknown>): void 
         freePolicy.FromDate = freeFrom;
       }
     }
-    const penaltyDate = addDaysToPolicyDate(normalizedCutoff, 1);
-    // Don't fabricate a penalty amount — TBO provides real charges
-    // in CancelPolicies. Just set the free slab; the UI will note
-    // that charges apply after the deadline without a specific amount.
     room.CancelPolicies = [freePolicy];
     room.CancellationPolicies = [freePolicy];
-    room.LastCancellationDate = normalizedCutoff;
-    room.FreeCancellationUntil = normalizedCutoff;
+    room.LastCancellationDate = cutoff;
+    room.FreeCancellationUntil = cutoff;
   }
 }
 
 function normalizePreBookCancellationResponse(raw: unknown): unknown {
   if (!raw || typeof raw !== "object") return raw;
 
-  const root = raw as Record<string, unknown>;
-  const envelope = (root.Response && typeof root.Response === "object" ? root.Response : root) as Record<string, unknown>;
+  const normalizeEnvelope = (envelope: Record<string, unknown> | null) => {
+    if (!envelope) return;
 
-  const hotelResults = coerceArray(envelope.HotelResult ?? envelope.hotelResult);
-  for (const hr of hotelResults) {
-    if (!hr || typeof hr !== "object") continue;
-    const roomsRaw = (hr as Record<string, unknown>).HotelRoomsDetails ?? (hr as Record<string, unknown>).Rooms ?? (hr as Record<string, unknown>).rooms ?? (hr as Record<string, unknown>).RoomDetails;
-    const rooms = coerceArray(roomsRaw);
-    for (const room of rooms) {
-      if (room && typeof room === "object") {
-        const roomRecord = room as Record<string, unknown>;
-        normalizeRoomCancellationPolicies(roomRecord);
-
-        if (roomRecord.CancelPolicies && Array.isArray(roomRecord.CancelPolicies)) {
-          roomRecord.CancelPolicies = roomRecord.CancelPolicies.map((policy) => {
-            const p = policy as Record<string, unknown>;
-            if (p.Index == null && p.index != null) p.Index = p.index;
-            if (p.FromDate == null && p.fromDate != null) p.FromDate = p.fromDate;
-            if (p.ChargeType == null && p.chargeType != null) p.ChargeType = p.chargeType;
-            if (p.CancellationCharge == null && p.amount != null) p.CancellationCharge = p.amount;
-            if (p.CancellationCharge == null && p.charge != null) p.CancellationCharge = p.charge;
-            return p;
-          });
-        }
+    const hotelResults = coerceArray(envelope.HotelResult ?? envelope.hotelResult);
+    for (const hr of hotelResults) {
+      if (!hr || typeof hr !== "object") continue;
+      const rooms = coerceArray((hr as Record<string, unknown>).Rooms ?? (hr as Record<string, unknown>).rooms);
+      for (const room of rooms) {
+        if (room && typeof room === "object") normalizeRoomCancellationPolicies(room as Record<string, unknown>);
       }
     }
-  }
 
+    const hotelRoomsDetails = coerceArray(envelope.HotelRoomsDetails ?? envelope.HotelRoomsDetails);
+    for (const room of hotelRoomsDetails) {
+      if (room && typeof room === "object") normalizeRoomCancellationPolicies(room as Record<string, unknown>);
+    }
+  };
+
+  normalizeEnvelope(raw as Record<string, unknown>);
+  normalizeEnvelope((raw as Record<string, unknown>).Response as Record<string, unknown> ?? null);
   return raw;
 }
 
@@ -591,17 +479,11 @@ async function tboPostWithClient<T = any>(
   if (topStatus && typeof topStatus === "object") {
     const code = Number(topStatus.Code);
     // Code 0, 1, 200 are all success variants across different TBO endpoints
-    // Code 201 is "No Available rooms" for Search — treat as an empty success, not an error
-    const isFailure = code !== 0 && code !== 1 && code !== 200 && code !== 201;
+    const isFailure = code !== 0 && code !== 1 && code !== 200;
     if (isFailure) {
-      // If TBO provided a failure code (e.g. 300) BUT still returned HotelResult data,
-      // allow it to pass through so we can extract the cancellation policies.
-      const hasData = responseData?.HotelResult || responseData?.Response?.HotelResult;
-      if (!hasData) {
-        const msg = topStatus.Description || topStatus.Message || `TBO status code ${topStatus.Code}`;
-        console.error(`${logTag} ${path} TBO Status error`, topStatus);
-        throw new Error(`TBO error: ${msg}`);
-      }
+      const msg = topStatus.Description || topStatus.Message || `TBO status code ${topStatus.Code}`;
+      console.error(`${logTag} ${path} TBO Status error`, topStatus);
+      throw new Error(`TBO error: ${msg}`);
     }
   }
 
@@ -1151,79 +1033,70 @@ export async function searchHotels(input: HotelSearchInput) {
   let firstTraceId = traceId;
   let firstResponseRaw: any = null;
 
-  // Process chunks concurrently (up to 5 at a time) to prevent TBO rate-limiting
+  // Process chunks with a smaller concurrency limit and retries to prevent TBO rate-limiting/dropping chunks
   const CONCURRENCY = 5;
-  const executing = new Set<Promise<void>>();
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(
+      batch.map(async (chunkCodes) => {
+        const chunkTraceId = randomUUID();
+        
+        let raw: any = null;
+        let lastErr: any = null;
+        // Retry logic: up to 3 attempts per chunk
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const searchPayload = {
+              CheckIn:            toTboDate(checkIn),
+              CheckOut:           toTboDate(checkOut),
+              HotelCodes:         chunkCodes,
+              GuestNationality:   nationality,
+              NoOfRooms:          rooms,
+              PaxRooms,
+              ResponseTime:       23,
+              IsDetailedResponse: false,
+              Filters: {
+                Refundable: false,
+                NoOfRooms:  0,
+                MealType:   0,
+                OrderBy:    0,
+                StarRating: 0,
+                HotelName:  null,
+              },
+              TokenId:  tokenId,
+              TraceId:  chunkTraceId,
+            };
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunkCodes = chunks[i];
-
-    const p = (async () => {
-      const chunkTraceId = randomUUID();
-      let raw: any = null;
-      let lastErr: any = null;
-
-      // Retry logic: up to 3 attempts per chunk
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const searchPayload = {
-            CheckIn:            toTboDate(checkIn),
-            CheckOut:           toTboDate(checkOut),
-            HotelCodes:         chunkCodes,
-            GuestNationality:   nationality,
-            NoOfRooms:          rooms,
-            PaxRooms,
-            ResponseTime:       23,
-            IsDetailedResponse: false,
-            Filters: {
-              Refundable: false,
-              NoOfRooms:  0,
-              MealType:   0,
-              OrderBy:    0,
-              StarRating: 0,
-              HotelName:  null,
-            },
-            TokenId:  tokenId,
-            TraceId:  chunkTraceId,
-          };
-
-          raw = await tboPost("/Search", searchPayload);
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (attempt === 3) throw err;
-          await new Promise(res => setTimeout(res, attempt * 1000));
+            raw = await tboPost("/Search", searchPayload);
+            
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (attempt === 3) throw err;
+            // Wait before retrying (exponential backoff)
+            await new Promise(res => setTimeout(res, attempt * 1000));
+          }
         }
-      }
+        
+        if (!raw) throw lastErr;
 
-      if (!raw) throw lastErr;
+        const echoed = (raw as any)?.Response?.TraceId || (raw as any)?.TraceId;
+        const outTrace = typeof echoed === "string" && echoed.trim() ? echoed.trim() : chunkTraceId;
+        
+        if (!firstResponseRaw) firstResponseRaw = raw;
+        if (i === 0) firstTraceId = outTrace;
 
-      const echoed = (raw as any)?.Response?.TraceId || (raw as any)?.TraceId;
-      const outTrace = typeof echoed === "string" && echoed.trim() ? echoed.trim() : chunkTraceId;
-
-      if (!firstResponseRaw) firstResponseRaw = raw;
-      if (i === 0) firstTraceId = outTrace;
-
-      const results = (raw as any)?.Response?.HotelResult || (raw as any)?.HotelResult;
-      if (Array.isArray(results)) {
-        results.forEach((h: any) => {
-          h._traceId = outTrace;
-        });
-        allHotelResults.push(...results);
-      }
-    })().catch((err) => {
-      console.error(`[hotel-search] Chunk ${i} failed:`, err);
-    });
-
-    executing.add(p);
-    p.finally(() => executing.delete(p));
-
-    if (executing.size >= CONCURRENCY) {
-      await Promise.race(executing);
-    }
+        const results = (raw as any)?.Response?.HotelResult || (raw as any)?.HotelResult;
+        if (Array.isArray(results)) {
+          // Inject the specific TraceId for this chunk into each hotel
+          results.forEach(h => {
+            h._traceId = outTrace;
+          });
+          allHotelResults.push(...results);
+        }
+      })
+    );
   }
-
-  await Promise.allSettled(executing);
 
   // Deduplicate hotels by HotelCode (TBO Sandbox sometimes returns the same hotels across different chunks)
   const uniqueHotelsMap = new Map();
@@ -1254,101 +1127,6 @@ export async function searchHotels(input: HotelSearchInput) {
 }
 
 /* ------------------------------------------------------------------ */
-/* searchHotelsStream — fires small batches and streams results        */
-/* onBatch is called as each TBO /Search responds (no waiting for all) */
-/* ------------------------------------------------------------------ */
-export async function searchHotelsStream(
-  input: HotelSearchInput,
-  onBatch: (hotels: any[], traceId: string) => void,
-  onDone: () => void,
-  onError: (err: any) => void,
-) {
-  const {
-    hotelCodes, checkIn, checkOut, rooms, adults,
-    children = 0, childrenAges = [],
-    roomGuests,
-    nationality = "IN",
-  } = input;
-
-  validateDateRange(checkIn, checkOut);
-
-  let PaxRooms;
-  if (roomGuests && roomGuests.length > 0) {
-    PaxRooms = roomGuests.map((rg) => ({
-      Adults: rg.adults,
-      Children: rg.children,
-      ChildrenAges: rg.childrenAges.length > 0 ? rg.childrenAges : [],
-    }));
-  } else {
-    PaxRooms = Array.from({ length: rooms }, () => ({
-      Adults: adults,
-      Children: children,
-      ChildrenAges: childrenAges.length > 0 ? childrenAges : [],
-    }));
-  }
-
-  const traceId = (input.traceId && String(input.traceId).trim()) || randomUUID();
-  const tokenId = await authenticate();
-
-  const codesArray = hotelCodes.split(',').map(c => c.trim()).filter(Boolean);
-  // Use smaller chunks (20 codes each) so each TBO call is faster
-  const STREAM_CHUNK_SIZE = 20;
-  const chunks: string[] = [];
-  for (let i = 0; i < codesArray.length; i += STREAM_CHUNK_SIZE) {
-    chunks.push(codesArray.slice(i, i + STREAM_CHUNK_SIZE).join(','));
-  }
-
-  const CONCURRENCY = 5;
-  const executing = new Set<Promise<void>>();
-
-  const runChunk = async (chunkCodes: string, idx: number) => {
-    // Use the SAME traceId for every chunk so all hotels share one traceId.
-    // TBO requires prebook to use the traceId from the search that returned
-    // that hotel — a single shared traceId satisfies this for the whole session.
-    try {
-      const searchPayload = {
-        CheckIn:            toTboDate(checkIn),
-        CheckOut:           toTboDate(checkOut),
-        HotelCodes:         chunkCodes,
-        GuestNationality:   nationality,
-        NoOfRooms:          rooms,
-        PaxRooms,
-        ResponseTime:       23,
-        IsDetailedResponse: false,
-        Filters: { Refundable: false, NoOfRooms: 0, MealType: 0, OrderBy: 0, StarRating: 0, HotelName: null },
-        TokenId:  tokenId,
-        TraceId:  traceId,  // shared across all chunks
-      };
-
-      const raw: any = await tboPost("/Search", searchPayload);
-      const echoed = raw?.Response?.TraceId || raw?.TraceId;
-      const outTrace = typeof echoed === "string" && echoed.trim() ? echoed.trim() : traceId;
-
-      const results: any[] = raw?.Response?.HotelResult || raw?.HotelResult || [];
-      results.forEach((h: any) => { h._traceId = outTrace; });
-
-      if (results.length > 0) {
-        onBatch(results, outTrace);
-      }
-    } catch (err) {
-      console.error(`[hotel-search-stream] Chunk ${idx} failed:`, err);
-      // Don't call onError for individual chunk failures — just skip
-    }
-  };
-
-  for (let i = 0; i < chunks.length; i++) {
-    const p = runChunk(chunks[i], i).finally(() => executing.delete(p));
-    executing.add(p);
-    if (executing.size >= CONCURRENCY) {
-      await Promise.race(executing);
-    }
-  }
-
-  await Promise.allSettled(executing);
-  onDone();
-}
-
-/* ------------------------------------------------------------------ */
 /* PreBook  POST /PreBook                                             */
 /* BookingCode (from Search) + TokenId + TraceId (same as Search)   */
 /* ------------------------------------------------------------------ */
@@ -1371,7 +1149,7 @@ export async function preBookHotel(input: {
   const preBookPayload = {
     BookingCode: input.bookingCode,
     TokenId:     tokenId,
-    PaymentMode: "Limit",
+    TraceId:     traceId,
   };
 
   console.log("[hotel-prebook] Sending to TBO:", JSON.stringify({
@@ -1392,9 +1170,8 @@ export async function preBookHotel(input: {
     ));
     throw err;
   }
-  const normalizedResult = normalizePreBookCancellationResponse(result);
-  console.log("[hotel-prebook] TBO RAW RESPONSE:", JSON.stringify(normalizedResult, null, 2));
-  return normalizedResult;
+  console.log("[hotel-prebook] TBO RAW RESPONSE:", JSON.stringify(result, null, 2));
+  return normalizePreBookCancellationResponse(result);
 
 }
 
@@ -1577,7 +1354,7 @@ export async function bookHotel(input: BookInput) {
 
     await Promise.all(resolvedBookingCodes.map(async (code) => {
       try {
-        const pb = await tboPost("/PreBook", { BookingCode: code, TokenId: tokenId, TraceId: traceId, IsVoucherBooking: false, PaymentMode: "Limit" });
+        const pb = await tboPost("/PreBook", { BookingCode: code, TokenId: tokenId, TraceId: traceId, IsVoucherBooking: false });
         const root = unwrapTboHotelPayload(pb) ?? (pb as Record<string, unknown>);
         const hotels = coerceHotelResultArray(root.HotelResult ?? root.hotelResult);
         for (const hr of hotels) {
@@ -1622,7 +1399,6 @@ export async function bookHotel(input: BookInput) {
       TokenId:          tokenId,
       TraceId:          traceId,
       IsVoucherBooking: false,
-      PaymentMode:      "Limit",
     };
 
     try {
@@ -1883,19 +1659,17 @@ export async function cancelHotelBooking(input: {
 
   console.log("[hotel-cancel] SendChangeRequest response:", JSON.stringify(sendResp, null, 2));
 
-  const innerSendResp = sendResp?.HotelChangeRequestResult || sendResp || {};
-
   // Check for errors
-  const errObj = innerSendResp.Error;
+  const errObj = sendResp?.Error;
   if (errObj?.ErrorCode && errObj.ErrorCode !== 0) {
     throw new Error(`TBO cancel rejected: ${errObj.ErrorMessage || `ErrorCode=${errObj.ErrorCode}`}`);
   }
-  if (innerSendResp.ResponseStatus !== undefined && Number(innerSendResp.ResponseStatus) !== 1) {
-    throw new Error(`TBO cancel failed: ResponseStatus=${innerSendResp.ResponseStatus}`);
+  if (sendResp?.ResponseStatus !== undefined && Number(sendResp.ResponseStatus) !== 1) {
+    throw new Error(`TBO cancel failed: ResponseStatus=${sendResp.ResponseStatus}`);
   }
 
-  const changeRequestId     = innerSendResp.ChangeRequestId;
-  const changeRequestStatus = innerSendResp.ChangeRequestStatus;
+  const changeRequestId     = sendResp?.ChangeRequestId;
+  const changeRequestStatus = sendResp?.ChangeRequestStatus;
 
   if (changeRequestId == null) {
     throw new Error("TBO did not return a ChangeRequestId — cancel may not have been accepted");
@@ -1920,13 +1694,11 @@ export async function cancelHotelBooking(input: {
     }
 
     console.log(`[hotel-cancel] GetChangeRequestStatus attempt ${attempt}:`, JSON.stringify(statusResp, null, 2));
-    const innerStatusResp = statusResp?.HotelChangeRequestStatusResult || statusResp?.HotelChangeRequestResult || statusResp || {};
-    const crStatus = Number(innerStatusResp.ChangeRequestStatus ?? -1);
+    const crStatus = Number(statusResp?.ChangeRequestStatus ?? -1);
     if (crStatus === 3 || crStatus === 4) break;  // 3=Processed, 4=Rejected
     if (attempt < 5) await new Promise(r => setTimeout(r, 3000));
   }
 
-  const innerStatusResp = statusResp?.HotelChangeRequestStatusResult || statusResp?.HotelChangeRequestResult || statusResp || {};
   return {
     sendChangeRequest:      sendResp,
     getChangeRequestStatus: statusResp ?? null,

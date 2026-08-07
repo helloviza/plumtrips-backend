@@ -604,15 +604,16 @@ r.post("/tbo/SendCancellationRequest", async (req, res) => {
     if (cancellationType === undefined || cancellationType === null || cancellationType === "") {
       return res.status(400).json(fail("cancellationType is required"));
     }
-    if (!ticketId) {
-      return res.status(400).json(fail("ticketId is required"));
+
+    const requestTypeNum      = Number(requestType);
+    const cancellationTypeNum = Number(cancellationType);
+
+    if (requestTypeNum === RequestType.PartialCancellation && !ticketId) {
+      return res.status(400).json(fail("ticketId is required for partial cancellation"));
     }
     if (!remarks || String(remarks).trim() === "") {
       return res.status(400).json(fail("remarks is required"));
     }
- 
-    const requestTypeNum      = Number(requestType);
-    const cancellationTypeNum = Number(cancellationType);
  
     if (!(requestTypeNum in RequestType)) {
       return res.status(400).json(fail("requestType must be 0 (NotSet), 1 (FullCancellation), 2 (PartialCancellation), or 3 (Reissuance)"));
@@ -645,7 +646,7 @@ r.post("/tbo/SendCancellationRequest", async (req, res) => {
       sectors: (origin && destination)
         ? [{ origin: String(origin).toUpperCase(), destination: String(destination).toUpperCase() }]
         : undefined,
-      ticketId: String(ticketId), // supports comma-separated multiple ids
+      ticketId: ticketId ? String(ticketId) : undefined,
       remarks:  String(remarks),
     });
  

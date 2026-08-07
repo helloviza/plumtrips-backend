@@ -196,7 +196,7 @@ export type CancellationParamsSend = {
   requestType:      number;   // RequestType enum: 0-3
   cancellationType: number;   // CancellationType enum: 0-3
   sectors?:         { origin: string; destination: string }[];
-  ticketId:         string;
+  ticketId?:        string;
   remarks:          string;
 };
 
@@ -206,12 +206,16 @@ export async function rawCancellationSend(params: CancellationParamsSend) {
     BookingId:        Number(params.bookingId),        // ✅ PascalCase
     RequestType:      params.requestType,               // ✅ PascalCase
     CancellationType: params.cancellationType,           // ✅ PascalCase
-    sectors: params.sectors?.map((s) => ({
-      Origin:      s.origin,
-      Destination: s.destination,
-    })),                                                 // ✅ PascalCase, only present for partial cancellation
-    TicketId: params.ticketId,                            // ✅ PascalCase
-    Remarks:  params.remarks,                             // ✅ PascalCase
+    ...(params.sectors && params.sectors.length > 0
+      ? {
+          sectors: params.sectors.map((s) => ({
+            Origin:      s.origin,
+            Destination: s.destination,
+          })),
+        }
+      : {}),
+    ...(params.ticketId ? { TicketId: params.ticketId } : {}),
+    ...(params.remarks !== undefined ? { Remarks: params.remarks } : {}),
   });
 
   console.log("[rawCancellationSend] Request body:", JSON.stringify(body, null, 2));

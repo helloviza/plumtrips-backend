@@ -11,6 +11,7 @@ export type PlannerSlotValues = {
   children: number | null;
   budgetINR: number | null;
   tripVibe: string | null;
+  contactPhone: string | null;
 };
 
 export type PlannerHistoryEntry = {
@@ -43,6 +44,7 @@ export function getSession(sessionId: string): PlannerSession {
         children: null,
         budgetINR: null,
         tripVibe: null,
+        contactPhone: null,
       },
       result: null,
     });

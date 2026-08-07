@@ -169,14 +169,10 @@ export async function cancelPNRSend(params: CancellationParamsSend) {
   if (params.cancellationType === undefined || params.cancellationType === null) {
     throw new Error("cancellationType is required");
   }
-  if (!params.ticketId) {
-    throw new Error("ticketId is required");
-  }
-  if (!params.remarks || !params.remarks.trim()) {
-    throw new Error("remarks is required");
-  }
-  // Origin/Destination are only mandatory for PartialCancellation (2).
   if (params.requestType === 2) {
+    if (!params.ticketId) {
+      throw new Error("ticketId is required for partial cancellation");
+    }
     if (!params.sectors || params.sectors.length === 0) {
       throw new Error("origin and destination are required for a partial cancellation");
     }
@@ -184,6 +180,9 @@ export async function cancelPNRSend(params: CancellationParamsSend) {
     if (badSector) {
       throw new Error("each sector must have both origin and destination for a partial cancellation");
     }
+  }
+  if (!params.remarks || !params.remarks.trim()) {
+    throw new Error("remarks is required");
   }
   return rawCancellationSend(params);
 }

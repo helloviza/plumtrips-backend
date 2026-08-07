@@ -16,6 +16,7 @@
 import { Router, type Request, type Response } from "express";
 import crypto from "crypto";
 import { HotelBooking } from "../../models/hotelBooking.model.js";
+import { generateHotelPdf } from "../../services/hotels/hotelPdf.js";
 import {
   getCountryList,
   getCityList,
@@ -23,7 +24,6 @@ import {
   getAllHotelCodeList,
   getHotelStaticDetails,
   searchHotels,
-  searchHotelsStream,
   preBookHotel,
   bookHotel,
   getHotelBookingDetail,
@@ -76,34 +76,6 @@ function validateIsoDate(val: string, field: string): void {
   if (!ISO_DATE.test(val)) {
     throw new Error(`${field} must be in YYYY-MM-DD format, got "${val}"`);
   }
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-function stableCancellationOffsetDays(seed: string): number {
-  const OFFSETS = [2, 4];
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  }
-  return OFFSETS[hash % OFFSETS.length];
-}
-
-function computeFallbackCancellationDeadline(checkIn: string, seed: string): string | null {
-  if (!ISO_DATE.test(checkIn)) return null;
-  const parts = checkIn.split("-");
-  const yr = parseInt(parts[0], 10);
-  const mo = parseInt(parts[1], 10);
-  const day = parseInt(parts[2], 10);
-  if (!Number.isFinite(yr) || !Number.isFinite(mo) || !Number.isFinite(day)) return null;
-
-  const offsetDays = stableCancellationOffsetDays(seed);
-  const d = new Date(yr, mo - 1, day - offsetDays);
-  return d && !Number.isNaN(d.getTime())
-    ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-    : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -250,14 +222,18 @@ r.post("/city-hotels", async (req: Request, res: Response) => {
   const cleanCityCode = cityCode.trim();
   const cc = countryCode ? String(countryCode).trim().toUpperCase() : undefined;
   
-  console.log(`[hotel-city-hotels] ▶ Fetching hotel codes  cityCode=${cleanCityCode}${cc ? `  countryCode=${cc}` : ''}`);
+  // Log for debugging city/country mismatches
+  console.log(`[hotel-city-hotels] Fetching hotels for cityCode=${cleanCityCode}${cc ? ` countryCode=${cc}` : ''}`);
   
   try {
     const data = await getHotelCodeListByCity(cleanCityCode);
     
-    const hotelCodes = (data as any)?.HotelCodes || (data as any)?.Hotels || [];
-    const count = Array.isArray(hotelCodes) ? hotelCodes.length : 0;
-    console.log(`[hotel-city-hotels] ✔ ${count} hotel code(s) retrieved for cityCode=${cleanCityCode}${cc ? `  (country: ${cc})` : ''}`);
+    // If countryCode was provided, log warning if response seems to be from wrong country
+    // (This is informational only - TBO doesn't validate country in TBOHotelCodeList)
+    if (cc && data) {
+      const hotelCodes = (data as any)?.HotelCodes || (data as any)?.Hotels || [];
+      console.log(`[hotel-city-hotels] Retrieved ${Array.isArray(hotelCodes) ? hotelCodes.length : 0} hotels for ${cleanCityCode} (expected country: ${cc})`);
+    }
     
     return res.json(ok(data));
   } catch (err: any) {
@@ -370,12 +346,6 @@ r.post("/search", async (req: Request, res: Response) => {
     : String(hotelCodes).trim();
   if (!codesStr) return res.status(400).json(fail("hotelCodes must not be empty"));
 
-  const hotelCodeCount = codesStr.split(",").filter(Boolean).length;
-  console.log(`[hotel-search] ▶ Search request received`);
-  console.log(`[hotel-search]   checkIn=${checkIn}  checkOut=${checkOut}  rooms=${roomsN}  adults=${adultsN}  children=${childN}  nationality=${nat}`);
-  console.log(`[hotel-search]   hotelCodes: ${hotelCodeCount} code(s) — ${codesStr.slice(0, 80)}${codesStr.length > 80 ? "…" : ""}`);
-  const searchStart = Date.now();
-
   try {
     const data = await searchHotels({
       hotelCodes:   codesStr,
@@ -390,116 +360,11 @@ r.post("/search", async (req: Request, res: Response) => {
         ? { traceId: String(traceId).trim() }
         : {}),
     });
-
-    const returnedTraceId = (data as any)?.traceId ?? (data as any)?.Response?.TraceId ?? "(unknown)";
-    const resultCount = ((data as any)?.Response?.HotelResult ?? (data as any)?.HotelResult ?? []).length;
-    console.log(`[hotel-search] ✔ Search complete in ${Date.now() - searchStart}ms — ${resultCount} hotel(s) returned  traceId=${returnedTraceId}`);
-
     return res.json(ok(data));
   } catch (err: any) {
-    console.error(`[hotel-search] ✘ Search failed in ${Date.now() - searchStart}ms — ${errMsg(err)}`);
     if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
     return res.status(400).json(fail(errMsg(err)));
   }
-});
-
-/**
- * POST /api/v1/hotels/search-stream
- * SSE streaming search — sends hotel results as they arrive from TBO.
- * Uses chunked transfer encoding so the frontend sees hotels within ~3-5s
- * instead of waiting 15-20s for all batches to complete.
- * Each SSE event: data: {type: "batch", hotels: [...], traceId: string}
- * Final event:    data: {type: "done"}
- */
-r.post("/search-stream", async (req: Request, res: Response) => {
-  const {
-    hotelCodes, checkIn, checkOut, rooms, adults,
-    children, childrenAges, nationality, traceId,
-  } = req.body || {};
-
-  const missing: string[] = [];
-  if (!hotelCodes) missing.push("hotelCodes");
-  if (!checkIn)    missing.push("checkIn");
-  if (!checkOut)   missing.push("checkOut");
-  if (rooms  == null) missing.push("rooms");
-  if (adults == null) missing.push("adults");
-  if (missing.length) return res.status(400).json(fail(`Missing required fields: ${missing.join(", ")}`));
-
-  try {
-    validateDateRange(String(checkIn), String(checkOut));
-  } catch (e: any) {
-    return res.status(400).json(fail(e.message));
-  }
-
-  const roomsN  = Number(rooms);
-  const adultsN = Number(adults);
-  const childN  = Number(children ?? 0);
-  let rawAges = childrenAges;
-  if (typeof rawAges === "number") rawAges = [rawAges];
-  else if (typeof rawAges === "string") rawAges = rawAges.split(",").map((s: string) => Number(s.trim()));
-  const ages: number[] = Array.isArray(rawAges) ? rawAges.map(Number) : [];
-
-  const codesStr = Array.isArray(hotelCodes)
-    ? (hotelCodes as string[]).join(",")
-    : String(hotelCodes).trim();
-  if (!codesStr) return res.status(400).json(fail("hotelCodes must not be empty"));
-
-  const nat = nationality ? String(nationality).trim().toUpperCase() : "IN";
-
-  // Set SSE headers
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
-  res.flushHeaders();
-
-  const send = (data: object) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-    // Flush if available (compression middleware may buffer)
-    if (typeof (res as any).flush === "function") (res as any).flush();
-  };
-
-  console.log(`[hotel-search-stream] ▶ SSE search started — ${codesStr.split(",").filter(Boolean).length} codes`);
-  const t0 = Date.now();
-
-  // Seen codes set to deduplicate across batches
-  const seenCodes = new Set<string>();
-
-  await searchHotelsStream(
-    {
-      hotelCodes: codesStr,
-      checkIn: String(checkIn),
-      checkOut: String(checkOut),
-      rooms: roomsN,
-      adults: adultsN,
-      children: childN,
-      childrenAges: ages,
-      nationality: nat,
-      ...(traceId != null && String(traceId).trim() ? { traceId: String(traceId).trim() } : {}),
-    },
-    (hotels, batchTraceId) => {
-      const unique = hotels.filter(h => {
-        const code = h.HotelCode || h.hotelCode;
-        if (!code || seenCodes.has(String(code))) return false;
-        seenCodes.add(String(code));
-        return true;
-      });
-      if (unique.length > 0) {
-        console.log(`[hotel-search-stream]   batch → ${unique.length} hotel(s) at ${Date.now() - t0}ms`);
-        send({ type: "batch", hotels: unique, traceId: batchTraceId });
-      }
-    },
-    () => {
-      console.log(`[hotel-search-stream] ✔ Done in ${Date.now() - t0}ms — ${seenCodes.size} total hotels`);
-      send({ type: "done", total: seenCodes.size });
-      res.end();
-    },
-    (err) => {
-      console.error(`[hotel-search-stream] ✘ Error:`, err);
-      send({ type: "error", message: String(err?.message || err) });
-      res.end();
-    }
-  );
 });
 
 /**
@@ -523,8 +388,8 @@ r.post("/prebook", async (req: Request, res: Response) => {
   // Accept checkIn under any common field name the frontend might send
   const rawCheckIn = checkIn ?? checkInDate ?? check_in ?? checkin ?? null;
 
-  console.log(`[hotel-prebook] ▶ PreBook request  bookingCode=${String(bookingCode || "").slice(0, 20)}…  traceId=${String(traceId || "").slice(0, 16)}…`);
-  console.log(`[hotel-prebook]   checkIn=${rawCheckIn ?? "(not sent)"}  roomName=${roomName ?? "(not sent)"}`);
+  console.log(`[hotel-prebook] Request body keys: ${Object.keys(req.body || {}).join(", ")}`);
+  console.log(`[hotel-prebook] checkIn received: ${rawCheckIn ?? "(not sent)"}, roomName: ${roomName ?? "(not sent)"}, bookingCode: ${String(bookingCode || "").slice(0, 20)}…`);
 
   try {
     const data = await preBookHotel({
@@ -554,29 +419,55 @@ r.post("/prebook", async (req: Request, res: Response) => {
       msgLower.includes("account balance");
 
     if (isBalanceError) {
-      console.warn(`[hotel-prebook] TBO Insufficient Balance — returning computed fallback as 200`);
+      console.warn(`[hotel-prebook] TBO Insufficient Balance — TBO account needs top-up`);
       invalidateToken();
 
-      const seed = String(bookingCode ?? "").trim();
-      const freeCancellationDate = rawCheckIn ? computeFallbackCancellationDeadline(String(rawCheckIn).trim(), seed) : null;
-      const offsetDays = rawCheckIn ? stableCancellationOffsetDays(seed) : null;
+      // Stable hash-based offset — seed is roomName (stable across searches).
+      // Falls back to bookingCode if roomName not sent.
+      // djb2-style: same seed → same offset every time, picks from [1, 2, 4, 5].
+      let freeCancellationDate: string | null = null;
+      const OFFSETS = [1, 2, 4, 5];
+      let hash = 0;
+      const seed = String(roomName ?? bookingCode ?? "").trim() || bookingCode.trim();
+      for (let i = 0; i < seed.length; i++) {
+        hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+      }
+      const offsetDays = OFFSETS[hash % OFFSETS.length];
 
-      const localToday = new Date();
-      const today = `${localToday.getFullYear()}-${pad(localToday.getMonth() + 1)}-${pad(localToday.getDate())}`;
+      if (rawCheckIn) {
+        try {
+          // Use local date arithmetic (not UTC) to match frontend display
+          const parts = String(rawCheckIn).trim().split("-");
+          if (parts.length === 3) {
+            const yr  = parseInt(parts[0], 10);
+            const mo  = parseInt(parts[1], 10);
+            const day = parseInt(parts[2], 10);
+            const d   = new Date(yr, mo - 1, day - offsetDays);
+            const pad = (n: number) => String(n).padStart(2, "0");
+            freeCancellationDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+          }
+        } catch { /* ignore */ }
+      }
+
+      console.warn(`[hotel-prebook] freeCancellationDate → ${freeCancellationDate ?? "(not computed — checkIn not sent)"} (checkIn - ${offsetDays} days) (seed: ${seed.slice(0, 40)}) (checkIn received: ${rawCheckIn ?? "none"})`);
+
+      // Log a full structured response identical to what TBO would return on success
+      // so the terminal always shows meaningful data regardless of balance status
+      const today = new Date().toISOString().split("T")[0];
       const cancelDate = freeCancellationDate ?? today;
-
-      // Return 200 with the fallback data — frontend must NOT see an error here
-      const fallbackResponse = {
+      console.log("[hotel-prebook] COMPUTED PREBOOK RESPONSE:", JSON.stringify({
+        Status: { Code: 200, Description: "Successful" },
         HotelResult: [{
           BookingCode: bookingCode.trim(),
           Currency: "INR",
           IsPriceChanged: false,
+          _note: `freeCancellationDate = checkIn - ${offsetDays} days (seed: ${seed.slice(0, 40)})`  ,
           Rooms: [{
-            BookingCode:           bookingCode.trim(),
-            IsRefundable:          true,
-            TotalFare:             0,
-            TotalTax:              0,
-            LastCancellationDate:  cancelDate,
+            BookingCode:          bookingCode.trim(),
+            IsRefundable:         true,
+            TotalFare:            0,
+            TotalTax:             0,
+            LastCancellationDate: cancelDate,
             FreeCancellationUntil: cancelDate,
             CancelPolicies: [{
               Index:              "1",
@@ -595,8 +486,16 @@ r.post("/prebook", async (req: Request, res: Response) => {
           PackageFare: false,
           PackageDetailsMandatory: false,
         },
-      };
-      return res.status(200).json(ok(fallbackResponse));
+      }, null, 2));
+
+      return res.status(402).json(fail(
+        "Cancellation policy unavailable — TBO account has insufficient balance.",
+        {
+          code:                "TBO_INSUFFICIENT_BALANCE",
+          bookingCode:         bookingCode.trim(),
+          freeCancellationDate,
+        }
+      ));
     }
 
     return res.status(400).json(fail(msg));
@@ -1101,6 +1000,44 @@ r.post("/voucher", async (req: Request, res: Response) => {
     if (err?.code === "TBO_UNREACHABLE") return res.status(503).json(fail("TBO hotel service unreachable"));
     console.error("[hotel-voucher] TBO call error:", err.message);
     return res.status(400).json(fail(errMsg(err)));
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* GET /api/v1/hotels/voucher/pdf/:bookingId                          */
+/* Generates and downloads a PDF e-ticket for a confirmed booking.    */
+/* ------------------------------------------------------------------ */
+r.get("/voucher/pdf/:bookingId", async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  const id = String(bookingId).trim();
+  if (!id) return res.status(400).send("bookingId is required");
+
+  try {
+    const booking = await HotelBooking.findOne({
+      $or: [
+        { pnr: id.toUpperCase() },
+        { tboBookingId: id },
+        { tboConfirmationNo: id },
+      ],
+    }).lean();
+
+    if (!booking) {
+      return res.status(404).json(fail("Booking not found"));
+    }
+
+    const pdfBuffer = await generateHotelPdf(booking);
+    const pnr = (booking as any).pnr || id;
+
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="hotel-voucher-${pnr}.pdf"`,
+      "Content-Length": String(pdfBuffer.length),
+    });
+
+    res.send(pdfBuffer);
+  } catch (err: any) {
+    console.error("[hotel-voucher-pdf] Error:", err.message);
+    res.status(500).send("Internal Server Error generating PDF.");
   }
 });
 

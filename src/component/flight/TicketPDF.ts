@@ -1,6 +1,3 @@
-// apps/backend/src/component/flight/ticketPdf.ts
-// npm install pdfkit && npm install -D @types/pdfkit
-
 import PDFDocument from "pdfkit";
 
 // Accepts the raw TicketResponse shape exactly as TBO returns it
