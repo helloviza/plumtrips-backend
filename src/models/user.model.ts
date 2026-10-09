@@ -102,6 +102,11 @@ const UserSchema = new Schema(
     // New: rich profile + saved co-travellers
     profile: { type: ProfileSchema, default: {} },
     coTravellers: { type: [CoTravellerSchema], default: [] },
+
+    savedBlogs: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Blog" }],
+      default: [],
+    },
   },
   { timestamps: true }
 );

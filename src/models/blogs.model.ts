@@ -37,7 +37,9 @@ export interface MapPin {
 export interface PostBlock {
   id: string;
   type: BlockType;
+  settings?: Record<string, any>;
   text?: string;
+  inlineContent?: Array<{ text: string; marks?: Record<string, any> }>;
   cite?: string;
   caption?: string;
   src?: string;
@@ -60,6 +62,7 @@ export interface PostBlock {
 export interface PostCover {
   src: string;
   caption: string;
+  alt?: string;
 }
 
 export interface PostAuthor {
@@ -80,6 +83,8 @@ export interface PostSeo {
   title: string;
   description: string;
   ogImage: string;
+  ogImageAlt?: string;
+  canonicalUrl?: string;
 }
 
 export interface Post {
@@ -99,6 +104,11 @@ export interface Post {
   seo: PostSeo;
   blocks: PostBlock[];
   related: RelatedPost[];
+
+  likes?: number;
+  ratingTotal?: number;
+  ratingCount?: number;
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -138,24 +148,28 @@ export interface BlogUpdateRequest extends Partial<BlogCreateRequest> {
 // Mongoose Schemas and Models
 import mongoose, { Schema, Document } from 'mongoose';
 
+// loc/body are optional (default '') so the editor can save partially filled items.
+// Fully empty items are removed by cleanBlocks() in blogs_routes.ts before saving.
 const ListItemSchema = new Schema({
   n: { type: Number, required: true },
-  title: { type: String, required: true },
-  loc: { type: String, required: true },
-  body: { type: String, required: true },
+  title: { type: String, default: '' },
+  loc: { type: String, default: '' },
+  body: { type: String, default: '' },
   img: { type: String },
 }, { _id: false });
 
 const MapPinSchema = new Schema({
   x: { type: Number, required: true },
   y: { type: Number, required: true },
-  label: { type: String, required: true },
+  label: { type: String, default: '' },
 }, { _id: false });
 
 const PostBlockSchema = new Schema({
   id: { type: String, required: true },
   type: { type: String, enum: ['h1', 'h2', 'h3', 'p', 'quote', 'image', 'cover', 'gallery', 'numlist', 'hotel', 'map', 'video', 'newsletter'], required: true },
+  settings: { type: Schema.Types.Mixed },
   text: { type: String },
+  inlineContent: { type: Schema.Types.Mixed },
   cite: { type: String },
   caption: { type: String },
   src: { type: String },
@@ -174,36 +188,40 @@ const PostBlockSchema = new Schema({
   url: { type: String },
 }, { _id: false });
 
+// Cover is optional content: empty strings are allowed.
 const PostCoverSchema = new Schema({
-  src: { type: String, required: true },
-  caption: { type: String, required: true },
+  src: { type: String, default: '' },
+  caption: { type: String, default: '' },
+  alt: { type: String, default: '' },
 }, { _id: false });
 
 const PostAuthorSchema = new Schema({
-  name: { type: String, required: true },
-  role: { type: String, required: true },
-  initials: { type: String, required: true },
-  avatar: { type: String, required: true },
+  name: { type: String, default: 'Admin' },
+  role: { type: String, default: 'Editor' },
+  initials: { type: String, default: 'AD' },
+  avatar: { type: String, default: '' },
 }, { _id: false });
 
 const RelatedPostSchema = new Schema({
-  cat: { type: String, required: true },
-  title: { type: String, required: true },
-  excerpt: { type: String, required: true },
-  thumb: { type: String, required: true },
+  cat: { type: String, default: '' },
+  title: { type: String, default: '' },
+  excerpt: { type: String, default: '' },
+  thumb: { type: String, default: '' },
 }, { _id: false });
 
 const PostSeoSchema = new Schema({
   title: { type: String },
-  description: { type: String},
+  description: { type: String },
   ogImage: { type: String },
+  ogImageAlt: { type: String },
+  canonicalUrl: { type: String },
 }, { _id: false });
 
 const PostSchema = new Schema({
   title: { type: String, required: true },
-  subtitle: { type: String, required: true },
+  subtitle: { type: String, default: '' },
   slug: { type: String, required: true, unique: true },
-  excerpt: { type: String, required: true },
+  excerpt: { type: String, default: '' },
   cover: PostCoverSchema,
   author: PostAuthorSchema,
   categories: [{ type: String }],
@@ -215,8 +233,24 @@ const PostSchema = new Schema({
   seo: PostSeoSchema,
   blocks: [PostBlockSchema],
   related: [RelatedPostSchema],
+
+  likes: {
+    type: Number,
+    default: 0,
+  },
+
+  ratingTotal: {
+    type: Number,
+    default: 0,
+  },
+
+  ratingCount: {
+    type: Number,
+    default: 0,
+  },
 }, {
   timestamps: true,
 });
+
 
 export const BlogModel = mongoose.model<Document & Post>('Blog', PostSchema);
